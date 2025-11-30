@@ -1,0 +1,15 @@
+# DockerOCR Backend Dependencies
+# Pinned versions for reproducible builds
+
+# Web framework
+flask==3.0.0
+flask-cors==4.0.0
+gunicorn==21.2.0
+
+# PaddleOCR and dependencies
+paddlepaddle==2.6.2
+paddleocr==2.7.3
+opencv-python-headless==4.8.1.78
+
+# NumPy 2.x compatibility issues with PaddlePaddle
+numpy>=1.21.0,<2.0.0
