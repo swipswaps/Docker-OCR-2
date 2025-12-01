@@ -402,6 +402,8 @@ export const processDocumentWithDocker = async (
     if (data.logs && Array.isArray(data.logs)) {
       for (const log of data.logs) {
         const level = log.level === 'success' ? 'success' : log.level === 'error' ? 'error' : 'info';
+        // Log to console for debugging/Playwright capture
+        console.log(`[Backend] ${log.timestamp} ${log.message}`);
         onLog?.(`[${log.timestamp}] ${log.message}`, level);
       }
     }

@@ -9,13 +9,15 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# Install system dependencies required by PaddleOCR and OpenCV
+# Install system dependencies required by PaddleOCR, OpenCV, and Tesseract OSD
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1 \
     libglib2.0-0 \
     libgomp1 \
     libgeos-dev \
     curl \
+    tesseract-ocr \
+    tesseract-ocr-osd \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
@@ -48,7 +50,6 @@ ENV HOME=/home/appuser
 EXPOSE 5000
 
 # Health check - verify the service is responding
-# start-period=120s allows time for model download on first run
 HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=5 \
     CMD curl --fail http://localhost:5000/health || exit 1
 
@@ -56,12 +57,13 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=5 \
 # - 1 worker (PaddleOCR is memory-intensive, single worker is safer)
 # - 120s timeout for long OCR operations
 # - graceful timeout for clean shutdowns
-# - preload to initialize OCR engine before forking
+# - log-level info to show app logs
 CMD ["gunicorn", \
      "--bind", "0.0.0.0:5000", \
      "--workers", "1", \
      "--timeout", "120", \
      "--graceful-timeout", "30", \
+     "--log-level", "info", \
      "--access-logfile", "-", \
      "--error-logfile", "-", \
      "--capture-output", \

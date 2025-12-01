@@ -398,78 +398,136 @@ def process_ocr():
         emit_log(f"[STEP 5/6] Building table structure from {count} text blocks...")
         blocks = []
         table_rows = []
+        extracted_text = []
+        col_boundaries = []
 
         if raw_blocks:
-            # Cluster blocks into rows based on Y position
-            raw_blocks.sort(key=lambda b: b["_y"])
+            # STEP 5a: Detect column boundaries FIRST using X gaps between text blocks
+            # This ensures text from different sheets/columns never gets mixed
+            all_x_starts = sorted(set([int(b["_x_min"]) for b in raw_blocks]))
 
-            # Calculate median height for row clustering
             heights = [b["_height"] for b in raw_blocks]
+            widths = [b["_width"] for b in raw_blocks]
             median_height = sorted(heights)[len(heights)//2] if heights else 30
-            row_threshold = median_height * 0.7
+            median_width = sorted(widths)[len(widths)//2] if widths else 100
 
-            # Group into rows
-            rows = []
-            current_row = [raw_blocks[0]]
-            for b in raw_blocks[1:]:
-                # Check if this block is on same row (Y overlap or close Y)
-                last_y = current_row[-1]["_y"]
-                if abs(b["_y"] - last_y) < row_threshold:
-                    current_row.append(b)
-                else:
-                    rows.append(current_row)
-                    current_row = [b]
-            rows.append(current_row)
+            # Find gaps between X positions
+            x_gaps = []
+            for i in range(1, len(all_x_starts)):
+                gap = all_x_starts[i] - all_x_starts[i-1]
+                x_gaps.append((gap, all_x_starts[i]))
 
-            # Sort blocks within each row by X position
-            for row in rows:
-                row.sort(key=lambda b: b["_x_min"])
+            if x_gaps:
+                gap_values = sorted([g[0] for g in x_gaps], reverse=True)
+                # Large gaps (>500px typically) separate columns/sheets
+                # Use a threshold based on image width or large gap detection
+                gap_threshold = max(median_width * 1.5, 300)
 
-            # Detect columns using all X positions
-            all_x_starts = sorted([b["_x_min"] for b in raw_blocks])
-
-            # Find column boundaries by clustering X starts
-            col_boundaries = []
-            if all_x_starts:
-                widths = [b["_width"] for b in raw_blocks]
-                median_width = sorted(widths)[len(widths)//2] if widths else 100
-                gap_threshold = median_width * 0.3  # Tighter threshold
+                emit_log(f"[DEBUG] X gaps (largest 5): {gap_values[:5]}, threshold: {gap_threshold:.0f}px")
 
                 col_boundaries = [all_x_starts[0]]
-                for x in all_x_starts[1:]:
-                    # Check if this X is far enough from last boundary
-                    is_new_col = True
-                    for bx in col_boundaries:
-                        if abs(x - bx) < gap_threshold:
-                            is_new_col = False
-                            break
-                    if is_new_col:
-                        col_boundaries.append(x)
+                for gap_size, x_pos in x_gaps:
+                    if gap_size >= gap_threshold:
+                        col_boundaries.append(x_pos)
                 col_boundaries.sort()
 
-            num_cols = len(col_boundaries)
-            emit_log(f"[STEP 5/6] Detected {len(rows)} rows and {num_cols} columns in {time.time() - step_start:.2f}s")
+            if not col_boundaries:
+                col_boundaries = [0]
 
-            # Step 6: Build structured table data
-            step_start = time.time()
-            emit_log("[STEP 6/6] Formatting output...")
-            for row_idx, row in enumerate(rows):
+            num_cols = len(col_boundaries)
+            emit_log(f"[DEBUG] Column boundaries ({num_cols}): {col_boundaries}")
+
+            # STEP 5b: Assign each text block to a column
+            columns = {i: [] for i in range(num_cols)}
+            for block in raw_blocks:
+                block_x = block["_x_min"]
+                col_idx = 0
+                for i, col_x in enumerate(col_boundaries):
+                    if block_x >= col_x - 50:  # Allow some tolerance
+                        col_idx = i
+                columns[col_idx].append(block)
+
+            emit_log(f"[DEBUG] Blocks per column: {[len(columns[i]) for i in range(num_cols)]}")
+
+            # STEP 5c: Within each column, cluster text blocks into cards based on Y gaps
+            def cluster_column_blocks(col_blocks, y_gap_threshold, col_idx, emit_debug=False):
+                """Cluster text blocks within a column into separate cards."""
+                if not col_blocks:
+                    return []
+
+                # Sort by Y position
+                sorted_blocks = sorted(col_blocks, key=lambda b: b["_y_min"])
+
+                # Find Y gaps between consecutive blocks
+                y_positions = [(b["_y_min"], b["_y_max"], b) for b in sorted_blocks]
+
+                # Calculate gaps for debugging
+                if emit_debug:
+                    gaps = []
+                    prev_y_max = y_positions[0][1]
+                    for y_min, y_max, _ in y_positions[1:]:
+                        gap = y_min - prev_y_max
+                        gaps.append(gap)
+                        prev_y_max = max(prev_y_max, y_max)
+                    gaps_sorted = sorted(gaps, reverse=True)
+                    emit_log(f"[DEBUG] Column {col_idx} Y gaps (largest 10): {gaps_sorted[:10]}")
+
+                cards = []
+                current_card = [y_positions[0][2]]
+                current_y_max = y_positions[0][1]
+
+                for y_min, y_max, block in y_positions[1:]:
+                    gap = y_min - current_y_max
+                    if gap >= y_gap_threshold:
+                        # New card - there's a significant vertical gap
+                        cards.append(current_card)
+                        current_card = [block]
+                        current_y_max = y_max
+                    else:
+                        # Same card - add to current
+                        current_card.append(block)
+                        current_y_max = max(current_y_max, y_max)
+
+                if current_card:
+                    cards.append(current_card)
+
+                return cards
+
+            # Determine Y gap threshold for separating cards
+            # Cards on the same sheet are separated by visible gaps (usually >50px)
+            # Lines within a card are close together (usually <30px)
+            # Use 1.5x median height to capture more card breaks
+            y_gap_threshold = median_height * 1.5
+            emit_log(f"[DEBUG] Y gap threshold for card separation: {y_gap_threshold:.0f}px (median_height={median_height:.0f})")
+
+            # Cluster blocks within each column
+            column_cards = {}
+            max_cards_per_col = 0
+            for col_idx in range(num_cols):
+                cards = cluster_column_blocks(columns[col_idx], y_gap_threshold, col_idx, emit_debug=False)
+                column_cards[col_idx] = cards
+                max_cards_per_col = max(max_cards_per_col, len(cards))
+
+            emit_log(f"[DEBUG] Cards per column: {[len(column_cards[i]) for i in range(num_cols)]}")
+
+            num_rows = max_cards_per_col
+            emit_log(f"[STEP 5/6] Detected {num_cols} columns x {num_rows} rows (max cards per column)")
+
+            # STEP 5d: Build table - each row is the Nth card from each column
+            for row_idx in range(num_rows):
                 row_data = [""] * num_cols
                 row_confidences = [0.0] * num_cols
 
-                for block in row:
-                    # Find which column this block belongs to
-                    col_idx = 0
-                    for i, col_x in enumerate(col_boundaries):
-                        if block["_x_min"] >= col_x - gap_threshold:
-                            col_idx = i
-
-                    # Append text to cell (handle multiple text blocks in same cell)
-                    if row_data[col_idx]:
-                        row_data[col_idx] += " " + block["text"]
-                    else:
-                        row_data[col_idx] = block["text"]
-                    row_confidences[col_idx] = max(row_confidences[col_idx], block["confidence"])
+                for col_idx in range(num_cols):
+                    cards = column_cards[col_idx]
+                    if row_idx < len(cards):
+                        card_blocks = cards[row_idx]
+                        # Sort blocks within card by Y then X for reading order
+                        sorted_card = sorted(card_blocks, key=lambda b: (b["_y"], b["_x"]))
+                        card_text = " ".join([b["text"] for b in sorted_card])
+                        card_conf = max([b["confidence"] for b in sorted_card]) if sorted_card else 0.0
+                        row_data[col_idx] = card_text
+                        row_confidences[col_idx] = card_conf
 
                 table_rows.append({
                     "row": row_idx,
@@ -477,7 +535,6 @@ def process_ocr():
                     "confidences": row_confidences
                 })
 
-                # Also add individual blocks for backward compatibility
                 for col_idx, cell_text in enumerate(row_data):
                     if cell_text:
                         blocks.append({
@@ -487,8 +544,13 @@ def process_ocr():
                             "col": col_idx
                         })
 
+            emit_log(f"[STEP 5/6] Grid assignment complete: {num_rows} rows x {num_cols} columns")
+
+            # Step 6: Format output
+            step_start = time.time()
+            emit_log("[STEP 6/6] Formatting output...")
+
             # Build text output - row by row with tab separation
-            extracted_text = []
             for row in table_rows:
                 row_text = "\t".join(row["cells"])
                 extracted_text.append(row_text)

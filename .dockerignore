@@ -1,3 +1,29 @@
-node_modules
-dist
+# Version control
 .git
+.gitignore
+
+# Development files
+*.md
+*.sh
+.vscode/
+.idea/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Node (if any frontend)
+node_modules/
+dist/

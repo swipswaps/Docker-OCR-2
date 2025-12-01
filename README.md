@@ -69,18 +69,49 @@ This is the most time-intensive step (~10-30s on CPU for large images).
 ```
 
 ### Step 5: Build Table Structure
-**Tool:** Custom Python clustering algorithm
+**Tool:** Custom Python clustering algorithm (column-first approach)
 
-Organizes detected text blocks into rows and columns:
+Organizes detected text blocks into a structured table using a **column-first** algorithm that preserves multi-line text blocks:
 
-1. Sort blocks by Y position
-2. Cluster into rows using median height threshold (blocks with similar Y = same row)
-3. Sort blocks within each row by X position (left-to-right reading order)
-4. Detect column boundaries by clustering X positions
-5. Assign each block to its column based on X position
+#### 5a. Detect Column Boundaries (X-Gap Analysis)
+1. Collect all X-start positions from text blocks
+2. Sort positions and calculate gaps between consecutive values
+3. Identify "large" gaps (> 2/3 of the largest gap) as column boundaries
+4. This detects visually separate columns (e.g., sheets of paper side by side)
 
 ```
-[STEP 5/6] Detected 14 rows and 5 columns in 0.00s
+[DEBUG] X gaps (largest 5): [838, 743, 729, 708, 28], threshold: 549px
+[DEBUG] Column boundaries (5): [83, 956, 1738, 2497, 3271]
+```
+
+#### 5b. Assign Blocks to Columns
+Each text block is assigned to its column based on X position relative to detected boundaries.
+
+```
+[DEBUG] Blocks per column: [25, 26, 27, 26, 27]
+```
+
+#### 5c. Cluster Blocks into Cards (Y-Gap Analysis)
+Within each column, text blocks are clustered into "cards" (logical groups like product descriptions):
+
+1. Sort blocks by Y position (top to bottom)
+2. Calculate vertical gaps between consecutive blocks
+3. Gaps larger than 1.5× median text height indicate a new card
+4. This keeps multi-line items together (e.g., "Canadian Solar 370-395W Solar Panels (90,284 Units / 34.456MW) Solar Energy Unused")
+
+```
+[DEBUG] Y gap threshold for card separation: 78px (median_height=52)
+[DEBUG] Cards per column: [6, 6, 5, 5, 5]
+```
+
+#### 5d. Build Table Grid
+The final table is constructed where each row contains the Nth card from each column:
+- Row 0 = 1st card from each column
+- Row 1 = 2nd card from each column
+- etc.
+
+```
+[STEP 5/6] Detected 5 columns x 6 rows (max cards per column)
 ```
 
 ### Step 6: Format Output
@@ -94,7 +125,7 @@ Builds the final response:
 
 ```
 [STEP 6/6] Output formatted in 0.00s
-[COMPLETE] OCR finished: 131 text blocks, 14 rows, avg confidence: 96.14% (total: 19.96s)
+[COMPLETE] OCR finished: 131 text blocks, 6 rows, avg confidence: 96.14% (total: 12.45s)
 ```
 
 ### Example Log Output
@@ -105,21 +136,26 @@ When you call the `/ocr` endpoint, the response includes a `logs` array with all
 {
   "success": true,
   "text": "...",
-  "confidence": 0.9614,
+  "confidence": 0.9615,
   "logs": [
-    {"timestamp": "14:27:17", "level": "info", "message": "[STEP 1/6] Reading uploaded file bytes..."},
-    {"timestamp": "14:27:17", "level": "info", "message": "[STEP 1/6] Read 16250883 bytes (15.50MB) in 0.03s"},
-    {"timestamp": "14:27:17", "level": "info", "message": "[STEP 2/6] Decoding image with OpenCV..."},
-    {"timestamp": "14:27:18", "level": "info", "message": "[STEP 2/6] Decoded image: 4032x3024 pixels in 0.58s"},
-    {"timestamp": "14:27:18", "level": "info", "message": "[STEP 3/6] Detecting table structure with OpenCV morphology..."},
-    {"timestamp": "14:27:18", "level": "info", "message": "[STEP 3/6] Table detection complete: 7 cells, 109 contours in 0.33s"},
-    {"timestamp": "14:27:18", "level": "info", "message": "[STEP 4/6] Running PaddleOCR text recognition (this may take 10-30s)..."},
-    {"timestamp": "14:27:37", "level": "success", "message": "[STEP 4/6] PaddleOCR complete in 19.00s"},
-    {"timestamp": "14:27:37", "level": "info", "message": "[STEP 5/6] Building table structure from 131 text blocks..."},
-    {"timestamp": "14:27:37", "level": "info", "message": "[STEP 5/6] Detected 14 rows and 5 columns in 0.00s"},
-    {"timestamp": "14:27:37", "level": "info", "message": "[STEP 6/6] Formatting output..."},
-    {"timestamp": "14:27:37", "level": "info", "message": "[STEP 6/6] Output formatted in 0.00s"},
-    {"timestamp": "14:27:37", "level": "success", "message": "[COMPLETE] OCR finished: 131 text blocks, 14 rows, avg confidence: 96.14% (total: 19.96s)"}
+    {"timestamp": "12:05:38", "level": "info", "message": "[STEP 1/6] Reading uploaded file bytes..."},
+    {"timestamp": "12:05:38", "level": "info", "message": "[STEP 1/6] Read 1820581 bytes (1.74MB) in 0.00s"},
+    {"timestamp": "12:05:38", "level": "info", "message": "[STEP 2/6] Decoding image with OpenCV..."},
+    {"timestamp": "12:05:38", "level": "info", "message": "[STEP 2/6] Decoded image: 4032x3024 pixels in 0.13s"},
+    {"timestamp": "12:05:38", "level": "info", "message": "[STEP 3/6] Detecting table structure with OpenCV morphology..."},
+    {"timestamp": "12:05:38", "level": "info", "message": "[STEP 3/6] Table detection complete: 8 cells, 113 contours in 0.16s"},
+    {"timestamp": "12:05:38", "level": "info", "message": "[STEP 4/6] Running PaddleOCR text recognition (this may take 10-30s)..."},
+    {"timestamp": "12:05:50", "level": "success", "message": "[STEP 4/6] PaddleOCR complete in 12.15s"},
+    {"timestamp": "12:05:50", "level": "info", "message": "[STEP 5/6] Building table structure from 131 text blocks..."},
+    {"timestamp": "12:05:50", "level": "info", "message": "[DEBUG] X gaps (largest 5): [838, 743, 729, 709, 28], threshold: 549px"},
+    {"timestamp": "12:05:50", "level": "info", "message": "[DEBUG] Column boundaries (5): [83, 956, 1738, 2498, 3271]"},
+    {"timestamp": "12:05:50", "level": "info", "message": "[DEBUG] Blocks per column: [25, 26, 27, 26, 27]"},
+    {"timestamp": "12:05:50", "level": "info", "message": "[DEBUG] Y gap threshold for card separation: 78px (median_height=52)"},
+    {"timestamp": "12:05:50", "level": "info", "message": "[DEBUG] Cards per column: [6, 6, 5, 5, 5]"},
+    {"timestamp": "12:05:50", "level": "info", "message": "[STEP 5/6] Detected 5 columns x 6 rows (max cards per column)"},
+    {"timestamp": "12:05:50", "level": "info", "message": "[STEP 6/6] Formatting output..."},
+    {"timestamp": "12:05:50", "level": "info", "message": "[STEP 6/6] Output formatted in 0.00s"},
+    {"timestamp": "12:05:50", "level": "success", "message": "[COMPLETE] OCR finished: 131 text blocks, 6 rows, avg confidence: 96.15% (total: 12.45s)"}
   ]
 }
 ```
