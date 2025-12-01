@@ -114,6 +114,24 @@ The final table is constructed where each row contains the Nth card from each co
 [STEP 5/6] Detected 5 columns x 6 rows (max cards per column)
 ```
 
+#### 5e. OCR Text Cleaning (Post-Processing)
+After building the table, each cell's text is cleaned using multiple techniques:
+
+**Tool 1: Dictionary-Based Corrections**
+- Fixes common OCR misrecognitions: `Enerqy` → `Energy`, `10Ok` → `100k`
+- Industry-specific corrections for solar equipment terminology
+
+**Tool 2: Regex Pattern Matching**
+- Fixes spacing around special characters: `Frames&Temper` → `Frames & Temper`
+- Adds space before common words: `Unusedwith` → `Unused with`
+- Separates merged words: `WSolar` → `W Solar`, `PVModules` → `PV Modules`
+- Handles acronyms: `(SESolar` → `(SE) Solar`
+- Number-word separation: `928Panels` → `928 Panels`
+
+```
+[STEP 5/6] Applied OCR text cleaning (spacing fixes, dictionary corrections)
+```
+
 ### Step 6: Format Output
 **Tool:** Python string/JSON formatting
 
@@ -153,6 +171,8 @@ When you call the `/ocr` endpoint, the response includes a `logs` array with all
     {"timestamp": "12:05:50", "level": "info", "message": "[DEBUG] Y gap threshold for card separation: 78px (median_height=52)"},
     {"timestamp": "12:05:50", "level": "info", "message": "[DEBUG] Cards per column: [6, 6, 5, 5, 5]"},
     {"timestamp": "12:05:50", "level": "info", "message": "[STEP 5/6] Detected 5 columns x 6 rows (max cards per column)"},
+    {"timestamp": "12:05:50", "level": "info", "message": "[STEP 5/6] Grid assignment complete: 6 rows x 5 columns"},
+    {"timestamp": "12:05:50", "level": "info", "message": "[STEP 5/6] Applied OCR text cleaning (spacing fixes, dictionary corrections)"},
     {"timestamp": "12:05:50", "level": "info", "message": "[STEP 6/6] Formatting output..."},
     {"timestamp": "12:05:50", "level": "info", "message": "[STEP 6/6] Output formatted in 0.00s"},
     {"timestamp": "12:05:50", "level": "success", "message": "[COMPLETE] OCR finished: 131 text blocks, 6 rows, avg confidence: 96.15% (total: 12.45s)"}

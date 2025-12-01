@@ -12,6 +12,7 @@ import subprocess
 import os
 import time
 import threading
+import re
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -49,6 +50,131 @@ app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
 
 # CORS configuration - adjust origins for production
 CORS(app, resources={r"/*": {"origins": "*"}}, methods=["GET", "POST", "OPTIONS"])
+
+
+# -----------------------------------------------------------------------------
+# OCR Text Post-Processing (Cleaning & Normalization)
+# -----------------------------------------------------------------------------
+# TOOL: Regex-based pattern matching for common OCR spacing errors
+# These patterns fix cases where PaddleOCR merges words that should be separate
+
+# Pattern 1: Add space around special characters like & that are adjacent to letters
+# Example: "Frames&Temper" -> "Frames & Temper"
+PATTERN_AMPERSAND = re.compile(r'(\w)&(\w)')
+
+# Pattern 2: Add space before common words that are merged with previous word
+# Example: "Unusedwith" -> "Unused with", "WSolar" -> "W Solar"
+PATTERN_MERGED_WORDS = re.compile(
+    r'([a-z])([A-Z][a-z])|'  # camelCase: "unusedWith" -> "unused With"
+    r'(\))([A-Za-z])|'        # closeParen+letter: ")Solar" -> ") Solar"
+    r'([A-Z])([A-Z][a-z])'    # ACRONYMWord: "SESolar" -> "SE Solar"
+)
+
+# Pattern 3: Add space between number and letter (when not part of model number)
+# Example: "928Panels" -> "928 Panels", but keep "370-395w" as is
+PATTERN_NUMBER_WORD = re.compile(r'(\d)([A-Za-z]{3,})')  # Only if 3+ letters follow
+
+# Pattern 4: Add space after closing paren before word
+PATTERN_PAREN_WORD = re.compile(r'\)([A-Za-z])')
+
+# TOOL: Dictionary-based OCR error corrections
+# Common OCR misrecognitions - industry-specific terms
+OCR_CORRECTIONS = {
+    # Common letter substitutions
+    'Enerqy': 'Energy',
+    'enerqy': 'energy',
+    'Paneis': 'Panels',
+    'paneis': 'panels',
+    'lnverter': 'Inverter',
+    'lnverters': 'Inverters',
+    'Siemens': 'Siemens',  # Often misread
+    '10Ok': '100k',
+    '10oK': '100K',
+    'l0Ok': '100k',
+    # Common merged words in solar industry
+    'WSolar': 'W Solar',
+    'wSolar': 'w Solar',
+    'MBattery': 'M Battery',
+    'PVModules': 'PV Modules',
+    'PVmodules': 'PV modules',
+    'kVA': 'kVA',  # Keep as-is
+    # Space before common words when merged
+    'Unusedwith': 'Unused with',
+    'unusedwith': 'unused with',
+    'Usedwith': 'Used with',
+    'usedwith': 'used with',
+}
+
+# TOOL: Regex replacements for context-aware fixes
+# These require regex patterns for flexible matching
+REGEX_CORRECTIONS = [
+    # "WSolar" or "wSolar" anywhere
+    (re.compile(r'\bW(Solar|Panels?|Inverters?|Energy)\b', re.IGNORECASE), r'W \1'),
+    # "MBattery" pattern
+    (re.compile(r'\bM(Battery|Inverter)\b', re.IGNORECASE), r'M \1'),
+    # Number followed by "Panels" without space
+    (re.compile(r'(\d)(Panels?)\b', re.IGNORECASE), r'\1 \2'),
+    # Number followed by "Units" without space
+    (re.compile(r'(\d)(Units?)\b', re.IGNORECASE), r'\1 \2'),
+    # "PV" followed by word without space
+    (re.compile(r'\bPV([A-Z][a-z]+)'), r'PV \1'),
+    # Closing paren followed by capital letter without space
+    (re.compile(r'\)([A-Z][a-z]{2,})'), r') \1'),
+    # "SE)" followed by word - special case for "(SE)Solar"
+    (re.compile(r'\(SE\)([A-Za-z])'), r'(SE) \1'),
+    # "(SE" without closing paren followed by word - OCR missed the paren
+    (re.compile(r'\(SE([A-Z][a-z]+)'), r'(SE) \1'),
+    # Lowercase followed by "with" without space
+    (re.compile(r'([a-z])(with)\b', re.IGNORECASE), r'\1 \2'),
+    # Lowercase followed by "for" without space
+    (re.compile(r'([a-z])(for)\b', re.IGNORECASE), r'\1 \2'),
+    # Uppercase letter followed by lowercase word (acronym then word)
+    # Example: "SESolar" -> "SE Solar", but not "Solar"
+    (re.compile(r'([A-Z]{2,})([A-Z][a-z]{3,})'), r'\1 \2'),
+]
+
+
+def clean_ocr_text(text: str) -> str:
+    """
+    Apply comprehensive OCR text cleaning and normalization.
+
+    Uses multiple techniques:
+    1. Dictionary-based corrections for known OCR errors
+    2. Regex pattern matching for systematic spacing issues
+    3. Context-aware replacements for industry-specific terms
+
+    Args:
+        text: Raw OCR text that may contain spacing/recognition errors
+
+    Returns:
+        Cleaned text with proper spacing and corrected common errors
+    """
+    if not text:
+        return text
+
+    cleaned = text
+
+    # Step 1: Apply dictionary-based corrections (exact matches)
+    # TOOL: Simple string replacement for known error patterns
+    for wrong, correct in OCR_CORRECTIONS.items():
+        if wrong in cleaned:
+            cleaned = cleaned.replace(wrong, correct)
+
+    # Step 2: Apply regex-based corrections (pattern matching)
+    # TOOL: Regex substitution for flexible pattern matching
+    for pattern, replacement in REGEX_CORRECTIONS:
+        cleaned = pattern.sub(replacement, cleaned)
+
+    # Step 3: Fix ampersand spacing: "word&word" -> "word & word"
+    cleaned = PATTERN_AMPERSAND.sub(r'\1 & \2', cleaned)
+
+    # Step 4: Normalize multiple spaces to single space
+    cleaned = re.sub(r' {2,}', ' ', cleaned)
+
+    # Step 5: Trim whitespace
+    cleaned = cleaned.strip()
+
+    return cleaned
 
 
 # -----------------------------------------------------------------------------
@@ -524,7 +650,9 @@ def process_ocr():
                         card_blocks = cards[row_idx]
                         # Sort blocks within card by Y then X for reading order
                         sorted_card = sorted(card_blocks, key=lambda b: (b["_y"], b["_x"]))
-                        card_text = " ".join([b["text"] for b in sorted_card])
+                        raw_card_text = " ".join([b["text"] for b in sorted_card])
+                        # Apply OCR text cleaning (spacing fixes, dictionary corrections)
+                        card_text = clean_ocr_text(raw_card_text)
                         card_conf = max([b["confidence"] for b in sorted_card]) if sorted_card else 0.0
                         row_data[col_idx] = card_text
                         row_confidences[col_idx] = card_conf
@@ -545,6 +673,7 @@ def process_ocr():
                         })
 
             emit_log(f"[STEP 5/6] Grid assignment complete: {num_rows} rows x {num_cols} columns")
+            emit_log("[STEP 5/6] Applied OCR text cleaning (spacing fixes, dictionary corrections)")
 
             # Step 6: Format output
             step_start = time.time()
