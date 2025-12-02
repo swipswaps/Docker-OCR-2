@@ -371,6 +371,49 @@ def get_result(job_id):
     return jsonify({'status': job.get_status()})
 ```
 
+#### 5.5 Enable Threading for SSE (Server-Sent Events)
+If adding real-time progress streaming:
+
+```dockerfile
+# Dockerfile - enable threads for concurrent SSE + OCR
+CMD ["gunicorn", \
+     "--bind", "0.0.0.0:5000", \
+     "--workers", "1", \
+     "--threads", "2", \         # NEW: 2 threads per worker
+     "--timeout", "120", \
+     "--capture-output", \
+     "app:app"]
+```
+
+**Why `--threads 2`:**
+- Allows SSE endpoint to stream progress while OCR runs
+- Single-threaded worker blocks SSE during OCR processing
+- 2 threads = 1 for SSE, 1 for OCR
+
+#### 5.6 Include Logs in OCR Response
+Alternative to SSE - include debug logs in response:
+
+```python
+@app.route('/ocr', methods=['POST'])
+def ocr_endpoint():
+    logs = []
+    def log(msg):
+        logs.append(f"[{time.strftime('%H:%M:%S')}] {msg}")
+        logger.info(msg)
+
+    log("Starting OCR processing")
+    # ... OCR processing ...
+    log(f"Detected {len(blocks)} text blocks")
+
+    return jsonify({
+        'success': True,
+        'table': result,
+        'debug_logs': logs  # Include logs in response
+    })
+```
+
+**Advantage:** Eliminates real-time streaming complexities while still providing debug info.
+
 ---
 
 ## 6. Error Handling Improvements

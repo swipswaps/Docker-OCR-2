@@ -60,7 +60,43 @@ np.median(heights)  # Calculate median text height
 
 ---
 
-### 3.5 OCR Text Cleaning (Dictionary + Regex)
+### 3.5 Application Logging Configuration
+**Purpose:** Ensure logs are captured by gunicorn and visible in `docker logs`
+
+**How Used (app.py lines 33-43):**
+```python
+# Configure logging - use stderr so gunicorn captures it with --capture-output
+handler = logging.StreamHandler(sys.stderr)  # CRITICAL: Output to stderr
+handler.setLevel(logging.INFO)
+handler.setFormatter(logging.Formatter(
+    '[%(asctime)s] [%(levelname)7s] %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+))
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+logger.addHandler(handler)
+logger.propagate = False  # Prevent duplicate logs from root logger
+```
+
+**Why StreamHandler(sys.stderr):**
+- Gunicorn's `--capture-output` captures stdout AND stderr
+- Flask's default logger may not output correctly under gunicorn
+- Explicit StreamHandler ensures reliable log capture
+- `logger.propagate = False` prevents duplicate log entries
+
+**Log Output Example:**
+```
+[2024-01-15 10:23:45] [   INFO] PaddleOCR initialized successfully
+[2024-01-15 10:23:46] [   INFO] OCR request received: image.png (2.5MB)
+[2024-01-15 10:23:52] [   INFO] OCR complete: 45 blocks detected
+```
+
+**Location:** `app.py` lines 33-43
+
+---
+
+### 3.6 OCR Text Cleaning (Dictionary + Regex)
 **Purpose:** Post-process OCR output to fix common recognition errors
 
 **How Used:**
@@ -163,7 +199,7 @@ docker stop dockerocr-backend && docker rm dockerocr-backend
 docker build -t dockerocr-backend .
 docker run -d --name dockerocr-backend --network=host dockerocr-backend
 
-# View logs
+# View logs (includes app logs via --capture-output)
 docker logs -f dockerocr-backend
 
 # Check health
@@ -173,13 +209,32 @@ curl http://localhost:5000/health
 docker exec dockerocr-backend python3 -c "import app; print(app.MAX_CONTENT_LENGTH)"
 ```
 
-**Dockerfile Configuration:**
+**Gunicorn Configuration (Dockerfile lines 56-70):**
 ```dockerfile
-FROM python:3.9-slim
-RUN apt-get update && apt-get install -y libgl1-mesa-glx tesseract-ocr
-RUN pip install paddleocr flask gunicorn opencv-python numpy flask-cors
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "1", "--timeout", "300", "app:app"]
+CMD ["gunicorn", \
+     "--bind", "0.0.0.0:5000", \
+     "--workers", "1", \            # Single worker (PaddleOCR memory-intensive)
+     "--timeout", "120", \          # 2 min timeout for large images
+     "--graceful-timeout", "30", \  # Clean shutdown
+     "--log-level", "info", \       # Show INFO level logs
+     "--access-logfile", "-", \     # Access logs to stdout
+     "--error-logfile", "-", \      # Error logs to stderr
+     "--capture-output", \          # CRITICAL: Captures app stdout/stderr
+     "app:app"]
 ```
+
+**Key Gunicorn Flags:**
+| Flag | Purpose |
+|------|---------|
+| `--capture-output` | Captures application stdout/stderr (enables `docker logs` to show app logs) |
+| `--access-logfile -` | Writes HTTP access logs to stdout |
+| `--error-logfile -` | Writes errors to stderr |
+| `--workers 1` | Single worker (PaddleOCR uses ~2GB RAM per worker) |
+| `--threads 2` | (Optional) Enables concurrent SSE + OCR on same worker |
+
+**Why `--capture-output` Matters:**
+Without this flag, Python `print()` and `logging` output is NOT captured by gunicorn.
+`docker logs` would only show gunicorn's own logs, not application debug output.
 
 **Location:** `Dockerfile`
 
@@ -293,17 +348,43 @@ npm run build # Production build
 
 **How Used:**
 - Browser-based HEIC decoding
-- Automatic EXIF rotation during conversion
+- **Automatic EXIF rotation during conversion** (CRITICAL - see below)
 - Quality control for output size
 
 ```typescript
 import heic2any from 'heic2any';
-const blob = await heic2any({ 
-  blob: file, 
-  toType: 'image/jpeg', 
-  quality: 0.85 
+const blob = await heic2any({
+  blob: file,
+  toType: 'image/jpeg',
+  quality: 0.85
 });
 ```
+
+**CRITICAL: heic2any Already Applies EXIF Rotation**
+
+This was a major bug source (see `mistakes_and_solutions.md` #1):
+- heic2any internally reads EXIF orientation and applies rotation
+- The output JPEG is already correctly oriented
+- **DO NOT apply additional EXIF rotation to HEIC-converted images**
+
+```typescript
+// WRONG - double rotation
+const orientation = await exifr.orientation(originalHeicFile);  // Still reads original EXIF!
+rotateImage(convertedJpeg, orientation);  // Image now rotated TWICE
+
+// CORRECT - skip EXIF rotation for HEIC files
+const isHeic = file.type === 'image/heic' || file.name.toLowerCase().endsWith('.heic');
+if (!isHeic) {
+  const orientation = await exifr.orientation(file);
+  rotateImage(processedFile, orientation);
+}
+```
+
+**Why This Matters:**
+1. `exifr.orientation(file)` reads from the **original** file, not the converted output
+2. The original HEIC still has orientation tag (e.g., 6 = 90° CW)
+3. heic2any already applied this rotation to the output
+4. Applying it again rotates image 90° beyond correct position
 
 **Location:** `frontend/services/geminiService.ts` lines 441-462
 

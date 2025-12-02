@@ -224,6 +224,30 @@ This showed the 112px gap was just below the 124px threshold, causing the merge.
 ### File Changed
 `app.py` lines 590-598
 
+### Related: Gunicorn Log Capture
+
+Another logging issue: Python `print()` and `logging` output wasn't visible in `docker logs`.
+
+**Root Cause:** Gunicorn doesn't capture application stdout/stderr by default.
+
+**Solution (Dockerfile):**
+```dockerfile
+CMD ["gunicorn", \
+     "--capture-output", \    # CRITICAL: Captures app stdout/stderr
+     "--log-level", "info", \
+     "--access-logfile", "-", \
+     "--error-logfile", "-", \
+     "app:app"]
+```
+
+**Solution (app.py):**
+```python
+# Explicit StreamHandler to stderr (gunicorn captures this)
+handler = logging.StreamHandler(sys.stderr)
+logger.addHandler(handler)
+logger.propagate = False  # Prevent duplicate logs
+```
+
 ---
 
 ## Mistake #8: Iterative Fixes Without Root Cause Analysis
