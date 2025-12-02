@@ -5,7 +5,6 @@ import { DocumentViewer } from './components/DocumentViewer';
 import { ExtractionResult } from './components/ExtractionResult';
 import { Terminal } from './components/Terminal';
 import { checkDockerHealth, processDocumentWithDocker, processDocumentWithTesseract, preprocessImage, rotateDocument, runDiagnostics } from './services/geminiService';
-import { detectRotationAngle, rotateImage } from './services/angleDetectionService';
 import { getInstallerScript } from './utils/backendScript';
 import { LogEntry, ProcessingState, ExtractionMode, DockerHealth, OcrEngine } from './types';
 
@@ -146,33 +145,11 @@ const App: React.FC = () => {
         // Step 1: Preprocess (EXIF rotation + HEIC conversion)
         let processed = await preprocessImage(selectedFile, activeEngine, addLog);
 
-        // Step 2: Auto-detect rotation using Tesseract OSD (only for Docker engine)
-        if (activeEngine === 'docker' && dockerHealth.status === 'healthy') {
-          setStatus({ isProcessing: true, progressMessage: 'Detecting image orientation...' });
-          addLog('Auto-detecting text orientation via Tesseract OSD...', 'info');
-
-          // Read processed file as base64 for rotation detection
-          const processedDataUrl = await new Promise<string>((resolve) => {
-            const reader = new FileReader();
-            reader.onload = (e) => resolve(e.target?.result as string);
-            reader.readAsDataURL(processed);
-          });
-
-          const angleResult = await detectRotationAngle(processedDataUrl, (progress, status) => {
-            addLog(status, 'info');
-          });
-
-          // Apply correction if needed and confidence is reasonable
-          if (angleResult.confidence > 0.3 && angleResult.angle !== 0) {
-            addLog(`Applying ${angleResult.angle}° rotation correction...`, 'info');
-            const rotatedDataUrl = await rotateImage(processedDataUrl, angleResult.angle);
-
-            // Convert rotated base64 back to File
-            const response = await fetch(rotatedDataUrl);
-            const blob = await response.blob();
-            processed = new File([blob], processed.name, { type: 'image/png' });
-            addLog('Rotation correction applied successfully', 'success');
-          }
+        // Step 2: For Docker engine, skip OSD detection
+        // EXIF rotation is already applied in preprocessImage, and PaddleOCR handles text orientation internally.
+        // OSD detection was causing issues where it incorrectly detected already-corrected images as needing rotation.
+        if (activeEngine === 'docker') {
+          addLog('Docker engine: EXIF rotation applied. Skipping OSD (PaddleOCR handles orientation).', 'info');
         }
 
         setFile(processed);

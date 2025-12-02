@@ -199,17 +199,166 @@ const getImageDimensions = (file: File): Promise<{width: number, height: number}
     return new Promise((resolve) => {
         const img = new Image();
         const objectUrl = URL.createObjectURL(file);
-
         img.onload = () => {
-          URL.revokeObjectURL(objectUrl); // Prevent memory leak
+          URL.revokeObjectURL(objectUrl);
           resolve({ width: img.width, height: img.height });
         };
         img.onerror = () => {
-          URL.revokeObjectURL(objectUrl); // Prevent memory leak
+          URL.revokeObjectURL(objectUrl);
           resolve({ width: 0, height: 0 });
         };
         img.src = objectUrl;
     });
+};
+
+/**
+ * Compresses an image file if it exceeds the target size.
+ * Uses adaptive quality reduction to achieve target size.
+ *
+ * @param file - The image file to compress
+ * @param targetSizeMB - Target file size in MB (default: 15MB for backend limit)
+ * @param onLog - Logging callback
+ * @returns Compressed file or original if already under target
+ */
+const compressImageForUpload = async (
+  file: File,
+  targetSizeMB: number = 15,
+  onLog?: (message: string, level?: 'info' | 'warn' | 'success' | 'error') => void
+): Promise<File> => {
+  const targetSizeBytes = targetSizeMB * 1024 * 1024;
+
+  // If already under target, no compression needed
+  if (file.size <= targetSizeBytes) {
+    return file;
+  }
+
+  onLog?.(`Image size ${(file.size / 1024 / 1024).toFixed(2)}MB exceeds ${targetSizeMB}MB limit. Compressing...`, 'info');
+
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return reject(new Error('Could not get canvas context'));
+
+        // Start with original dimensions
+        let width = img.width;
+        let height = img.height;
+
+        // For very large images (>20MP), scale down to reduce memory usage
+        const maxPixels = 20 * 1000 * 1000; // 20 megapixels
+        const currentPixels = width * height;
+        if (currentPixels > maxPixels) {
+          const scale = Math.sqrt(maxPixels / currentPixels);
+          width = Math.floor(width * scale);
+          height = Math.floor(height * scale);
+          onLog?.(`Scaling down from ${img.width}x${img.height} to ${width}x${height} (memory optimization)`, 'info');
+        }
+
+        canvas.width = width;
+        canvas.height = height;
+        ctx.drawImage(img, 0, 0, width, height);
+
+        // Adaptive quality: start at 0.85, reduce if needed
+        let quality = 0.85;
+        const minQuality = 0.5;
+
+        const tryCompress = (q: number) => {
+          canvas.toBlob((blob) => {
+            if (!blob) {
+              reject(new Error('Compression failed'));
+              return;
+            }
+
+            if (blob.size <= targetSizeBytes || q <= minQuality) {
+              const compressedFile = new File(
+                [blob],
+                file.name.replace(/\.(heic|png|bmp|tiff?)$/i, '.jpg'),
+                { type: 'image/jpeg' }
+              );
+              onLog?.(`Compressed to ${(blob.size / 1024 / 1024).toFixed(2)}MB (quality: ${Math.round(q * 100)}%)`, 'success');
+              resolve(compressedFile);
+            } else {
+              // Reduce quality and try again
+              tryCompress(q - 0.1);
+            }
+          }, 'image/jpeg', q);
+        };
+
+        tryCompress(quality);
+      };
+      img.onerror = () => reject(new Error('Failed to load image for compression'));
+      img.src = e.target?.result as string;
+    };
+    reader.onerror = () => reject(new Error('Failed to read file for compression'));
+    reader.readAsDataURL(file);
+  });
+};
+
+/**
+ * Resizes an image to a maximum dimension while preserving aspect ratio.
+ * Used to reduce very large images (e.g., 5712x4284) to manageable sizes.
+ *
+ * @param file - The image file to resize
+ * @param maxDimension - Maximum width or height in pixels
+ * @param onLog - Logging callback
+ * @returns Resized file
+ */
+const resizeImageToMaxDimension = (
+  file: File,
+  maxDimension: number,
+  onLog?: (message: string, level?: 'info' | 'warn' | 'success' | 'error') => void
+): Promise<File> => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        let width = img.width;
+        let height = img.height;
+
+        // Calculate scale to fit within maxDimension
+        const scale = Math.min(maxDimension / width, maxDimension / height, 1);
+
+        if (scale >= 1) {
+          // No resize needed
+          resolve(file);
+          return;
+        }
+
+        width = Math.floor(width * scale);
+        height = Math.floor(height * scale);
+
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return reject(new Error('Could not get canvas context'));
+
+        canvas.width = width;
+        canvas.height = height;
+        ctx.drawImage(img, 0, 0, width, height);
+
+        canvas.toBlob((blob) => {
+          if (blob) {
+            const resizedFile = new File(
+              [blob],
+              file.name.replace(/\.(heic|png|bmp|tiff?)$/i, '.jpg'),
+              { type: 'image/jpeg' }
+            );
+            onLog?.(`Resized to ${width}x${height} (${(blob.size / 1024 / 1024).toFixed(2)}MB)`, 'success');
+            resolve(resizedFile);
+          } else {
+            reject(new Error('Canvas to Blob failed during resize'));
+          }
+        }, 'image/jpeg', 0.90);
+      };
+      img.onerror = () => reject(new Error('Failed to load image for resize'));
+      img.src = e.target?.result as string;
+    };
+    reader.onerror = () => reject(new Error('Failed to read file for resize'));
+    reader.readAsDataURL(file);
+  });
 };
 
 /**
@@ -284,54 +433,69 @@ export const preprocessImage = async (
   let processedFile = file;
   const originalFile = file;
 
-  // 1. Convert HEIC
-  if (file.name.toLowerCase().endsWith('.heic') || file.type === 'image/heic') {
+  // 1. Convert HEIC with smart resizing for large images
+  // NOTE: heic2any automatically applies EXIF rotation during conversion,
+  // so we must NOT apply EXIF rotation again for HEIC files.
+  let isHeicFile = file.name.toLowerCase().endsWith('.heic') || file.type === 'image/heic';
+
+  if (isHeicFile) {
     onLog?.('Detected HEIC image, converting to JPEG...', 'info');
     try {
-      const blob = await heic2any({ blob: file, toType: 'image/jpeg', quality: 0.9 });
+      // heic2any handles EXIF rotation automatically during conversion
+      const blob = await heic2any({ blob: file, toType: 'image/jpeg', quality: 0.85 });
       const processedBlob = Array.isArray(blob) ? blob[0] : blob;
-      processedFile = new File([processedBlob], file.name.replace(/\.heic$/i, '.jpg'), { type: 'image/jpeg' });
-      const dims = await getImageDimensions(processedFile);
-      onLog?.(`HEIC converted: ${dims.width}x${dims.height}`, 'success');
+      let tempFile = new File([processedBlob], file.name.replace(/\.heic$/i, '.jpg'), { type: 'image/jpeg' });
+      const dims = await getImageDimensions(tempFile);
+      onLog?.(`HEIC converted: ${dims.width}x${dims.height} (EXIF rotation applied by converter)`, 'success');
+
+      // Resize very large images to prevent memory/size issues
+      const maxDimension = 4000;
+      if (dims.width > maxDimension || dims.height > maxDimension) {
+        onLog?.(`Resizing large image (>${maxDimension}px) for optimal processing...`, 'info');
+        tempFile = await resizeImageToMaxDimension(tempFile, maxDimension, onLog);
+      }
+      processedFile = tempFile;
     } catch (e: any) {
       onLog?.(`HEIC conversion failed: ${e.message}`, 'error');
       console.error("HEIC conversion failed:", e);
+      isHeicFile = false; // Fall through to EXIF handling below
     }
   }
 
-  // 2. EXIF Rotation - Read from original file before any conversion
-  let exifAngle = 0;
-  try {
-      const orientation = await exifr.orientation(originalFile);
-      if (orientation) {
-        onLog?.(`[Verbatim] EXIF Orientation tag: ${orientation}`, 'info');
-        // Standard EXIF orientation values:
-        // 1 = Normal (0°)
-        // 3 = Rotated 180°
-        // 6 = Rotated 90° CW (image needs 90° CW rotation to display correctly)
-        // 8 = Rotated 270° CW / 90° CCW (image needs 270° CW rotation)
-        switch (orientation) {
-            case 3: exifAngle = 180; break;
-            case 6: exifAngle = 90; break;
-            case 8: exifAngle = 270; break;
+  // 2. EXIF Rotation - ONLY for non-HEIC files (heic2any already handles EXIF)
+  if (!isHeicFile) {
+    let exifAngle = 0;
+    try {
+        const orientation = await exifr.orientation(originalFile);
+        if (orientation) {
+          onLog?.(`[Verbatim] EXIF Orientation tag: ${orientation}`, 'info');
+          // Standard EXIF orientation values:
+          // 1 = Normal (0°), 3 = 180°, 6 = 90° CW, 8 = 270° CW
+          switch (orientation) {
+              case 3: exifAngle = 180; break;
+              case 6: exifAngle = 90; break;
+              case 8: exifAngle = 270; break;
+          }
         }
-      }
-  } catch (e: any) {
-      onLog?.(`EXIF read skipped: ${e.message || 'unknown error'}`, 'warn');
-  }
+    } catch (e: any) {
+        onLog?.(`EXIF read skipped: ${e.message || 'unknown error'}`, 'warn');
+    }
 
-  if (exifAngle !== 0) {
-      onLog?.(`Applying EXIF rotation correction (${exifAngle}°)...`, 'info');
-      processedFile = await rotateImageCanvas(processedFile, exifAngle);
-      onLog?.(`EXIF rotation applied successfully`, 'success');
-  } else {
-      onLog?.('No EXIF rotation needed', 'info');
+    if (exifAngle !== 0) {
+        onLog?.(`Applying EXIF rotation correction (${exifAngle}°)...`, 'info');
+        processedFile = await rotateImageCanvas(processedFile, exifAngle);
+        onLog?.(`EXIF rotation applied successfully`, 'success');
+    } else {
+        onLog?.('No EXIF rotation needed', 'info');
+    }
   }
 
   // 3. Optimization Path for Docker
   if (engine === 'docker') {
       onLog?.('Engine: Docker. Skipping frontend enhancements to prevent backend conflicts.', 'info');
-      return processedFile; 
+      // Compress large images to stay within backend upload limit (50MB, target 30MB for safety)
+      processedFile = await compressImageForUpload(processedFile, 30, onLog);
+      return processedFile;
   }
 
   // 4. Tesseract Path: OSD Check + Enhancements
@@ -362,11 +526,19 @@ export const processDocumentWithDocker = async (
 ): Promise<OCRResponse> => {
   const startTime = performance.now();
 
+  // Compress if file is too large (backend limit is 50MB, target 30MB for safety margin)
+  let uploadFile = file;
+  const maxUploadSizeMB = 30;
+  if (file.size > maxUploadSizeMB * 1024 * 1024) {
+    onLog?.(`File size ${(file.size / 1024 / 1024).toFixed(2)}MB exceeds ${maxUploadSizeMB}MB. Compressing before upload...`, 'info');
+    uploadFile = await compressImageForUpload(file, maxUploadSizeMB, onLog);
+  }
+
   // Log file details
-  onLog?.(`Uploading ${file.name} (${(file.size/1024/1024).toFixed(2)}MB) to PaddleOCR...`, 'info');
+  onLog?.(`Uploading ${uploadFile.name} (${(uploadFile.size/1024/1024).toFixed(2)}MB) to PaddleOCR...`, 'info');
 
   const formData = new FormData();
-  formData.append('file', file);
+  formData.append('file', uploadFile);
   formData.append('mode', mode);
 
   try {

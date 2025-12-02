@@ -23,7 +23,7 @@ import numpy as np
 # -----------------------------------------------------------------------------
 # Configuration
 # -----------------------------------------------------------------------------
-MAX_CONTENT_LENGTH = 16 * 1024 * 1024  # 16 MB max file size
+MAX_CONTENT_LENGTH = 50 * 1024 * 1024  # 50 MB max file size (supports high-res images)
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'tiff', 'tif'}
 ALLOWED_MIMETYPES = {
     'image/png', 'image/jpeg', 'image/gif', 'image/bmp',
@@ -620,17 +620,17 @@ def process_ocr():
                 return cards
 
             # Determine Y gap threshold for separating cards
-            # Cards on the same sheet are separated by visible gaps (usually >50px)
-            # Lines within a card are close together (usually <30px)
-            # Use 1.5x median height to capture more card breaks
-            y_gap_threshold = median_height * 1.5
+            # Cards on the same sheet are separated by visible gaps (usually >100px)
+            # Lines within a card are close together (usually <80px)
+            # Use 1.2x median height to capture more card breaks (lowered from 1.5)
+            y_gap_threshold = median_height * 1.2
             emit_log(f"[DEBUG] Y gap threshold for card separation: {y_gap_threshold:.0f}px (median_height={median_height:.0f})")
 
             # Cluster blocks within each column
             column_cards = {}
             max_cards_per_col = 0
             for col_idx in range(num_cols):
-                cards = cluster_column_blocks(columns[col_idx], y_gap_threshold, col_idx, emit_debug=False)
+                cards = cluster_column_blocks(columns[col_idx], y_gap_threshold, col_idx, emit_debug=True)
                 column_cards[col_idx] = cards
                 max_cards_per_col = max(max_cards_per_col, len(cards))
 
