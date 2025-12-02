@@ -168,18 +168,212 @@ def clean_ocr_text_v2(text: str) -> str:
     # Pass 1: Structural spacing
     text = re.sub(r'([a-z])([A-Z])', r'\1 \2', text)  # camelCase
     text = re.sub(r'(\d)([A-Za-z])', r'\1 \2', text)  # 928Panels
-    
+
     # Pass 2: Dictionary corrections (after spacing fixed)
     corrections = {'Enerqy': 'Energy', 'Unusedwith': 'Unused with'}
     for wrong, right in corrections.items():
         text = text.replace(wrong, right)
-    
+
     return text
+```
+
+#### 3.4 Expand OCR Dictionary
+Current dictionary has ~20 entries. Should be expanded:
+
+```python
+OCR_CORRECTIONS_EXPANDED = {
+    # Existing
+    'Enerqy': 'Energy',
+    'Paneis': 'Panels',
+
+    # Add common OCR errors
+    'lnverter': 'Inverter',   # l→I
+    'Siemens': 'Siemens',
+    'Schneider': 'Schneider',
+    'rn': 'm',                 # Often confused
+    'cl': 'd',                 # Often confused
+
+    # Industry-specific (solar)
+    'Mwh': 'MWh',
+    'Kwh': 'kWh',
+    'Pv': 'PV',
+
+    # Common OCR artifacts
+    '|': 'I',                  # Pipe→I
+    '0': 'O',                  # Context-dependent
+}
+```
+
+#### 3.5 Add Spell-Check Pass
+Use a lightweight spell checker for final cleanup:
+
+```python
+from spellchecker import SpellChecker
+
+def spell_check_pass(text: str, domain_words: set) -> str:
+    spell = SpellChecker()
+    spell.word_frequency.load_words(domain_words)  # Add industry terms
+
+    words = text.split()
+    corrected = []
+    for word in words:
+        if word.lower() not in spell:
+            correction = spell.correction(word.lower())
+            if correction and correction != word.lower():
+                corrected.append(correction)
+            else:
+                corrected.append(word)
+        else:
+            corrected.append(word)
+    return ' '.join(corrected)
 ```
 
 ---
 
-## 4. Error Handling Improvements
+## 4. Output Tab Improvements
+
+### Current State
+- 5 tabs: Text, JSON, CSV, XLSX, SQL
+- Basic formatting
+- No column headers
+- SQL generates generic column names (col_a, col_b)
+
+### Recommended Improvements
+
+#### 4.1 Add Column Header Detection
+Use first row as headers if it looks like a header row:
+
+```typescript
+function detectHeaders(table: OcrRow[]): { hasHeaders: boolean; headers: string[] } {
+  if (table.length < 2) return { hasHeaders: false, headers: [] };
+
+  const firstRow = table[0].cells;
+  const secondRow = table[1].cells;
+
+  // Heuristics: header row usually has no numbers, shorter text
+  const firstRowNumeric = firstRow.some(c => /^\d+$/.test(c));
+  const secondRowNumeric = secondRow.some(c => /^\d+$/.test(c));
+
+  if (!firstRowNumeric && secondRowNumeric) {
+    return { hasHeaders: true, headers: firstRow };
+  }
+  return { hasHeaders: false, headers: [] };
+}
+```
+
+#### 4.2 Improve SQL Generation
+Generate proper column names and add data types:
+
+```typescript
+const sqlOutput = useMemo(() => {
+  const { hasHeaders, headers } = detectHeaders(ocrTable);
+  const colNames = hasHeaders
+    ? headers.map(h => h.toLowerCase().replace(/\s+/g, '_'))
+    : Array.from({ length: colCount }, (_, i) => `col_${i + 1}`);
+
+  const dataRows = hasHeaders ? ocrTable.slice(1) : ocrTable;
+
+  return `CREATE TABLE ocr_results (
+  id SERIAL PRIMARY KEY,
+  ${colNames.map(c => `${c} TEXT`).join(',\n  ')}
+);
+
+${dataRows.map(row =>
+  `INSERT INTO ocr_results (${colNames.join(', ')}) VALUES (${
+    row.cells.map(c => `'${c.replace(/'/g, "''")}'`).join(', ')
+  });`
+).join('\n')}`;
+}, [ocrTable]);
+```
+
+#### 4.3 Add Markdown Table Export
+```typescript
+const markdownOutput = useMemo(() => {
+  if (!ocrTable.length) return extractedText;
+
+  const { hasHeaders, headers } = detectHeaders(ocrTable);
+  const dataRows = hasHeaders ? ocrTable.slice(1) : ocrTable;
+  const headerRow = hasHeaders ? headers : ocrTable[0].cells.map((_, i) => `Column ${i + 1}`);
+
+  const header = `| ${headerRow.join(' | ')} |`;
+  const separator = `| ${headerRow.map(() => '---').join(' | ')} |`;
+  const rows = dataRows.map(row => `| ${row.cells.join(' | ')} |`);
+
+  return [header, separator, ...rows].join('\n');
+}, [ocrTable]);
+```
+
+---
+
+## 5. Docker Improvements
+
+### Current State
+- Single worker (CPU-bound OCR)
+- 300s timeout
+- No GPU support
+- No model caching between rebuilds
+
+### Recommended Improvements
+
+#### 5.1 Add Volume Mount for Model Caching
+Avoid re-downloading models on every container rebuild:
+
+```bash
+# Create persistent volume for models
+docker volume create paddleocr-models
+
+# Run with volume mount
+docker run -d --name dockerocr-backend \
+  -v paddleocr-models:/home/appuser/.paddleocr \
+  --network=host dockerocr-backend
+```
+
+#### 5.2 Add Health Check to Dockerfile
+```dockerfile
+HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
+  CMD curl -f http://localhost:5000/health || exit 1
+```
+
+#### 5.3 Add GPU Support (Optional)
+```dockerfile
+# Use NVIDIA CUDA base image
+FROM nvidia/cuda:11.8-runtime-ubuntu22.04
+
+# Install PaddlePaddle GPU version
+RUN pip install paddlepaddle-gpu paddleocr
+```
+
+```bash
+# Run with GPU access
+docker run -d --gpus all --name dockerocr-backend dockerocr-backend
+```
+
+#### 5.4 Add Request Queuing
+For high-traffic scenarios, add Redis queue:
+
+```python
+from rq import Queue
+from redis import Redis
+
+redis_conn = Redis()
+q = Queue(connection=redis_conn)
+
+@app.route('/ocr', methods=['POST'])
+def ocr_endpoint():
+    job = q.enqueue(process_ocr, file_bytes, job_timeout=300)
+    return jsonify({'job_id': job.id, 'status': 'queued'})
+
+@app.route('/ocr/<job_id>', methods=['GET'])
+def get_result(job_id):
+    job = Job.fetch(job_id, connection=redis_conn)
+    if job.is_finished:
+        return jsonify(job.result)
+    return jsonify({'status': job.get_status()})
+```
+
+---
+
+## 6. Error Handling Improvements
 
 ### Current State
 - Generic error messages
@@ -188,7 +382,7 @@ def clean_ocr_text_v2(text: str) -> str:
 
 ### Recommended Improvements
 
-#### 4.1 Specific Error Types
+#### 6.1 Specific Error Types
 ```typescript
 class HeicConversionError extends Error {
   constructor(message: string, public readonly originalError?: Error) {
@@ -203,7 +397,7 @@ class OcrTimeoutError extends Error {
 }
 ```
 
-#### 4.2 Retry Logic with Exponential Backoff
+#### 6.2 Retry Logic with Exponential Backoff
 ```typescript
 async function fetchWithRetry(
   url: string, 
@@ -231,7 +425,7 @@ async function fetchWithRetry(
 
 ---
 
-## 5. Performance Improvements
+## 7. Performance Improvements
 
 ### Current State
 - Full image sent to backend
@@ -255,7 +449,7 @@ async function processWithPreview(file: File, onPreview: (url: string) => void) 
 }
 ```
 
-#### 5.2 Result Caching
+#### 7.2 Result Caching
 Cache OCR results by image hash:
 
 ```typescript
@@ -273,7 +467,7 @@ async function cachedOcr(file: File): Promise<OcrResult> {
 
 ---
 
-## 6. Code Organization Improvements
+## 8. Code Organization Improvements
 
 ### Current State
 - Large monolithic files
@@ -281,7 +475,7 @@ async function cachedOcr(file: File): Promise<OcrResult> {
 
 ### Recommended Improvements
 
-#### 6.1 Separate Concerns
+#### 8.1 Separate Concerns
 ```
 frontend/
 ├── services/
@@ -297,7 +491,7 @@ frontend/
     └── textCleaning.ts
 ```
 
-#### 6.2 Extract Custom Hooks
+#### 8.2 Extract Custom Hooks
 ```typescript
 // hooks/useDockerHealth.ts
 function useDockerHealth(pollInterval = 15000) {
@@ -328,7 +522,13 @@ function useDockerHealth(pollInterval = 15000) {
 | Adaptive Y-gap threshold | High | Medium | **P1** |
 | HEIC detection by magic bytes | Medium | Low | **P1** |
 | Retry logic | Medium | Low | **P1** |
+| Expand OCR dictionary | Medium | Low | **P1** |
+| Column header detection | Medium | Medium | **P1** |
+| Docker volume for models | Medium | Low | **P1** |
 | Code reorganization | Medium | High | **P2** |
 | Result caching | Low | Medium | **P2** |
+| Markdown table export | Low | Low | **P2** |
+| GPU support | Low | High | **P3** |
 | Visual regression tests | Low | Medium | **P3** |
+| Request queuing (Redis) | Low | High | **P3** |
 

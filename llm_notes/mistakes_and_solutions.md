@@ -193,6 +193,87 @@ for (const port of ports) {
 
 ---
 
+---
+
+## Mistake #7: Not Adding Debug Logging Earlier
+
+### Problem
+When the Y-gap threshold was causing row merging, it was difficult to understand why without seeing the actual gap values.
+
+### Root Cause
+- Debug logging for gap values was wrapped in `if emit_debug:` which wasn't enabled by default
+- Had to modify code to always emit debug info, rebuild Docker, then test
+
+### Solution
+Add verbose debug logging that's always emitted during development:
+
+```python
+# Always emit Y gaps for debugging
+gaps_sorted = sorted(gaps, reverse=True)
+emit_log(f"[DEBUG] Column {col_idx} Y gaps (largest 10): {gaps_sorted[:10]}")
+```
+
+**Debug output that helped diagnose:**
+```
+[DEBUG] Y gap threshold for card separation: 124px (median_height=83)
+[DEBUG] Column 0 Y gaps (largest 10): [198, 166, 151, 142, 112, 82, 68, 64, 59, 59]
+```
+
+This showed the 112px gap was just below the 124px threshold, causing the merge.
+
+### File Changed
+`app.py` lines 590-598
+
+---
+
+## Mistake #8: Iterative Fixes Without Root Cause Analysis
+
+### Problem
+Multiple attempts were made to fix the rotation issue before identifying the true root cause:
+1. First tried removing OSD detection
+2. Then tried adjusting EXIF rotation logic
+3. Finally identified heic2any was already applying EXIF
+
+### Root Cause
+- Didn't trace the full image processing pipeline before making changes
+- Each "fix" addressed symptoms rather than the underlying issue
+
+### Solution
+Before fixing, trace the complete pipeline:
+
+```
+HEIC file → heic2any (applies EXIF rotation) → processedFile
+                                                    ↓
+processedFile → exifr.orientation() reads ORIGINAL file's EXIF
+                                                    ↓
+Manual rotation applied (WRONG - already rotated!)
+```
+
+The fix was understanding that `exifr.orientation(originalFile)` was reading from the **original** HEIC, not the converted JPEG.
+
+### Lesson
+**Always trace data flow through the entire pipeline before making changes.**
+
+---
+
+## Mistake #9: Not Checking Library Documentation
+
+### Problem
+Assumed `heic2any` was a simple format converter, didn't realize it handles EXIF orientation.
+
+### Root Cause
+- Didn't check heic2any documentation/source
+- Made assumptions about library behavior
+
+### Solution
+The heic2any library description clearly states:
+> "Converts HEIC/HEIF images to JPEG/PNG in the browser. **Automatically handles EXIF orientation.**"
+
+### Lesson
+**Always read library documentation for features that might affect your use case.**
+
+---
+
 ## Summary: Key Lessons Learned
 
 | Mistake | Lesson |
@@ -203,4 +284,37 @@ for (const port of ports) {
 | No E2E testing | Set up Playwright/Selenium early for visual debugging |
 | File size limit | Anticipate real-world file sizes; add resize/compress pipeline |
 | Port mismatch | Make tests resilient to environment differences |
+| No debug logging | Add verbose logging from the start for troubleshooting |
+| Iterative fixes | Trace full pipeline before making changes |
+| Skipped docs | Always read library documentation |
+
+---
+
+## Debugging Checklist (For Future)
+
+Before making changes to fix an issue:
+
+1. **Add debug logging** to see actual values at each step
+2. **Run E2E test** (Playwright) to reproduce issue consistently
+3. **Trace full pipeline** from input to output
+4. **Check library docs** for features that might affect behavior
+5. **Test with multiple inputs** to confirm fix doesn't break other cases
+6. **Check thresholds** - are hardcoded values appropriate for all cases?
+
+### Docker Debugging Commands
+```bash
+# View live logs
+docker logs -f dockerocr-backend
+
+# Check specific output
+docker logs dockerocr-backend 2>&1 | grep -E "Y gap|threshold|Cards"
+
+# Rebuild and test
+docker stop dockerocr-backend && docker rm dockerocr-backend
+docker build -t dockerocr-backend . && docker run -d --name dockerocr-backend --network=host dockerocr-backend
+sleep 30 && curl http://localhost:5000/health
+
+# Run Playwright test
+cd frontend && npx playwright test debug-rotation.spec.ts --headed
+```
 

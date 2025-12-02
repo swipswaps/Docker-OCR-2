@@ -60,6 +60,51 @@ np.median(heights)  # Calculate median text height
 
 ---
 
+### 3.5 OCR Text Cleaning (Dictionary + Regex)
+**Purpose:** Post-process OCR output to fix common recognition errors
+
+**How Used:**
+Two-layer correction system in `app.py`:
+
+**Layer 1: Dictionary-based corrections** (lines 82-106)
+```python
+OCR_CORRECTIONS = {
+    'Enerqy': 'Energy',      # Letter substitution (q→g)
+    'Paneis': 'Panels',      # Letter substitution (i→l)
+    '10Ok': '100k',          # Number/letter confusion
+    'WSolar': 'W Solar',     # Merged words
+    'Unusedwith': 'Unused with',  # Missing space
+}
+```
+
+**Layer 2: Regex pattern corrections** (lines 110-134)
+```python
+REGEX_CORRECTIONS = [
+    # Number followed by "Panels" without space: "928Panels" → "928 Panels"
+    (re.compile(r'(\d)(Panels?)\b', re.IGNORECASE), r'\1 \2'),
+    # Acronym followed by word: "SESolar" → "SE Solar"
+    (re.compile(r'([A-Z]{2,})([A-Z][a-z]{3,})'), r'\1 \2'),
+    # Closing paren followed by letter: ")Solar" → ") Solar"
+    (re.compile(r'\)([A-Z][a-z]{2,})'), r') \1'),
+]
+```
+
+**Application function** (lines 137-175):
+```python
+def clean_ocr_text(text: str) -> str:
+    # Apply dictionary corrections first
+    for wrong, right in OCR_CORRECTIONS.items():
+        text = text.replace(wrong, right)
+    # Then apply regex patterns
+    for pattern, replacement in REGEX_CORRECTIONS:
+        text = pattern.sub(replacement, text)
+    return text.strip()
+```
+
+**Location:** `app.py` lines 80-175
+
+---
+
 ### 4. Flask 3.0
 **Purpose:** REST API web framework
 
@@ -111,7 +156,78 @@ docker build -t dockerocr-backend .
 docker run -d --name dockerocr-backend --network=host dockerocr-backend
 ```
 
+**Key Docker Commands:**
+```bash
+# Rebuild after code changes (required when app.py changes)
+docker stop dockerocr-backend && docker rm dockerocr-backend
+docker build -t dockerocr-backend .
+docker run -d --name dockerocr-backend --network=host dockerocr-backend
+
+# View logs
+docker logs -f dockerocr-backend
+
+# Check health
+curl http://localhost:5000/health
+
+# Execute commands inside container
+docker exec dockerocr-backend python3 -c "import app; print(app.MAX_CONTENT_LENGTH)"
+```
+
+**Dockerfile Configuration:**
+```dockerfile
+FROM python:3.9-slim
+RUN apt-get update && apt-get install -y libgl1-mesa-glx tesseract-ocr
+RUN pip install paddleocr flask gunicorn opencv-python numpy flask-cors
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "1", "--timeout", "300", "app:app"]
+```
+
 **Location:** `Dockerfile`
+
+---
+
+### 6.5 Tesseract OSD (Orientation Script Detection)
+**Purpose:** Detect image rotation angle for correction
+
+**How Used:**
+Backend endpoint `/detect-rotation` uses Tesseract's PSM 0 mode:
+
+```python
+# app.py lines 280-360
+@app.route('/detect-rotation', methods=['POST'])
+def detect_rotation():
+    # Save image to temp file
+    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
+        tmp.write(img_bytes)
+
+    # Run Tesseract OSD
+    result = subprocess.run(
+        ['tesseract', tmp_path, 'stdout', '--psm', '0'],
+        capture_output=True, text=True, timeout=30
+    )
+
+    # Parse output
+    for line in result.stdout.split('\n'):
+        if 'Orientation in degrees:' in line:
+            orientation = int(line.split(':')[1].strip())
+        elif 'Orientation confidence:' in line:
+            confidence = float(line.split(':')[1].strip())
+```
+
+**OSD Output Format:**
+```
+Page number: 0
+Orientation in degrees: 270
+Rotate: 90
+Orientation confidence: 14.29
+Script: Latin
+Script confidence: 2.00
+```
+
+**Confidence Scale:** 0-15 (14.29 = 95.3% confidence)
+
+**Current Status:** Disabled for Docker engine to prevent over-rotation (see mistakes_and_solutions.md)
+
+**Location:** `app.py` lines 280-365
 
 ---
 
@@ -273,6 +389,81 @@ test('HEIC upload', async ({ page }) => {
 ```
 
 **Location:** `frontend/tests/debug-rotation.spec.ts`
+
+---
+
+## Output Tabs System
+
+The frontend provides 5 export formats via tabbed interface:
+
+### Tab Implementation
+**Location:** `frontend/App.tsx` lines 340-480
+
+```typescript
+type OutputTab = 'text' | 'json' | 'csv' | 'xlsx' | 'sql';
+const [activeOutputTab, setActiveOutputTab] = useState<OutputTab>('text');
+```
+
+### Tab Formats
+
+| Tab | Format | How Generated |
+|-----|--------|---------------|
+| **Text** | Plain text | Tab-separated rows from `extractedText` state |
+| **JSON** | Structured JSON | `JSON.stringify(ocrTable.map(row => row.cells), null, 2)` |
+| **CSV** | Comma-separated | Cells quoted, escaped with `""` for embedded quotes |
+| **XLSX** | Excel workbook | Dynamic import of `xlsx` library, `XLSX.writeFile()` |
+| **SQL** | INSERT statements | Auto-generates CREATE TABLE + INSERT for each row |
+
+### JSON Output Generation (lines 213-216)
+```typescript
+const jsonOutput = useMemo(() => {
+  if (!ocrTable.length) return JSON.stringify({ text: extractedText }, null, 2);
+  return JSON.stringify(ocrTable.map(row => row.cells), null, 2);
+}, [ocrTable, extractedText]);
+```
+
+### CSV Output Generation (lines 218-224)
+```typescript
+const csvOutput = useMemo(() => {
+  const rows = ocrTable.map(row =>
+    row.cells.map((cell: string) => `"${(cell || '').replace(/"/g, '""')}"`).join(',')
+  );
+  return rows.join('\n');
+}, [ocrTable, extractedText]);
+```
+
+### SQL Output Generation (lines 226-244)
+```typescript
+const sqlOutput = useMemo(() => {
+  const colNames = Array.from({ length: colCount }, (_, i) =>
+    `col_${String.fromCharCode(97 + i)}`  // col_a, col_b, etc.
+  );
+  const createTable = `CREATE TABLE IF NOT EXISTS ocr_results (\n  id SERIAL PRIMARY KEY,\n${colDefs}\n);`;
+  const inserts = ocrTable.map(row => {
+    const values = row.cells.map((cell: string) => `'${cell.replace(/'/g, "''")}'`).join(', ');
+    return `INSERT INTO ocr_results (${colNames.join(', ')}) VALUES (${values});`;
+  });
+  return createTable + '\n\n' + inserts.join('\n');
+}, [ocrTable, ocrColumns]);
+```
+
+### XLSX Export (lines 259-286)
+```typescript
+const handleDownloadXLSX = async () => {
+  const XLSX = await import('xlsx');  // Dynamic import
+  const data = ocrTable.map(row => {
+    const rowObj: Record<string, string> = {};
+    row.cells.forEach((cell: string, i: number) => {
+      rowObj[String.fromCharCode(65 + i)] = cell || '';  // A, B, C...
+    });
+    return rowObj;
+  });
+  const ws = XLSX.utils.json_to_sheet(data);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'OCR Results');
+  XLSX.writeFile(wb, 'ocr_results.xlsx');
+};
+```
 
 ---
 
