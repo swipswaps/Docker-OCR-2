@@ -12,16 +12,41 @@ This document provides a comprehensive audit of all technologies used in this re
 **How Used:**
 - Text detection: Identifies text regions with bounding boxes
 - Text recognition: Reads text from each detected region
-- Angle classification (`cls=True`): Corrects 180° rotated text
+- Angle classification disabled to avoid CPU issues (rotation handled elsewhere)
 
+### Actual Code (app.py lines 186-212)
 ```python
-from paddleocr import PaddleOCR
-ocr = PaddleOCR(use_angle_cls=True, lang="en", show_log=False)
-result = ocr.ocr(img_array, cls=True)
-# Returns: [[[bbox_points], (text, confidence)], ...]
+def init_ocr_engine():
+    """Initialize PaddleOCR engine with CPU-optimized settings."""
+    try:
+        # CPU-optimized settings from working DockerOCR project
+        # CRITICAL: use_angle_cls=False to avoid "could not execute a primitive" on some CPUs
+        engine = PaddleOCR(
+            use_angle_cls=False,     # Disabled - causes CPU issues; rotation handled by Tesseract OSD
+            lang='en',
+            use_gpu=False,
+            show_log=False,
+            enable_mkldnn=False,     # Disable MKL-DNN to avoid CPU instruction issues
+            cpu_threads=1,           # Single thread to avoid race conditions
+            use_tensorrt=False,      # Disable TensorRT
+            use_mp=False,            # Disable multiprocessing
+            # Higher detection limits for high-resolution images (e.g., phone photos)
+            det_limit_side_len=2560, # Increased from 960 to handle 4K images
+            det_limit_type='max',
+            det_db_thresh=0.3,       # Lower threshold to detect more text regions
+            det_db_box_thresh=0.5,   # Box confidence threshold
+            rec_batch_num=6,         # Recognition batch size
+        )
+        logger.info("PaddleOCR initialized successfully.")
+        return engine
+    except Exception as e:
+        logger.exception("Failed to initialize PaddleOCR: %s", e)
+        return None
+
+ocr = init_ocr_engine()
 ```
 
-**Location:** `app.py` lines 76-81, 258-275
+**Location:** `app.py` lines 186-212
 
 ---
 
@@ -102,42 +127,100 @@ logger.propagate = False  # Prevent duplicate logs from root logger
 **How Used:**
 Two-layer correction system in `app.py`:
 
-**Layer 1: Dictionary-based corrections** (lines 82-106)
+### Actual Code (app.py lines 80-106) - Dictionary Corrections
 ```python
+# TOOL: Dictionary-based OCR error corrections
+# Common OCR misrecognitions - industry-specific terms
 OCR_CORRECTIONS = {
-    'Enerqy': 'Energy',      # Letter substitution (q→g)
-    'Paneis': 'Panels',      # Letter substitution (i→l)
-    '10Ok': '100k',          # Number/letter confusion
-    'WSolar': 'W Solar',     # Merged words
-    'Unusedwith': 'Unused with',  # Missing space
+    # Common letter substitutions
+    'Enerqy': 'Energy',
+    'enerqy': 'energy',
+    'Paneis': 'Panels',
+    'paneis': 'panels',
+    'lnverter': 'Inverter',
+    'lnverters': 'Inverters',
+    'Siemens': 'Siemens',  # Often misread
+    '10Ok': '100k',
+    '10oK': '100K',
+    'l0Ok': '100k',
+    # Common merged words in solar industry
+    'WSolar': 'W Solar',
+    'wSolar': 'w Solar',
+    'MBattery': 'M Battery',
+    'PVModules': 'PV Modules',
+    'PVmodules': 'PV modules',
+    'kVA': 'kVA',  # Keep as-is
+    # Space before common words when merged
+    'Unusedwith': 'Unused with',
+    'unusedwith': 'unused with',
+    'Usedwith': 'Used with',
+    'usedwith': 'used with',
 }
 ```
 
-**Layer 2: Regex pattern corrections** (lines 110-134)
+### Actual Code (app.py lines 108-134) - Regex Corrections
 ```python
+# TOOL: Regex replacements for context-aware fixes
+# These require regex patterns for flexible matching
 REGEX_CORRECTIONS = [
-    # Number followed by "Panels" without space: "928Panels" → "928 Panels"
+    # "WSolar" or "wSolar" anywhere
+    (re.compile(r'\bW(Solar|Panels?|Inverters?|Energy)\b', re.IGNORECASE), r'W \1'),
+    # "MBattery" pattern
+    (re.compile(r'\bM(Battery|Inverter)\b', re.IGNORECASE), r'M \1'),
+    # Number followed by "Panels" without space
     (re.compile(r'(\d)(Panels?)\b', re.IGNORECASE), r'\1 \2'),
-    # Acronym followed by word: "SESolar" → "SE Solar"
-    (re.compile(r'([A-Z]{2,})([A-Z][a-z]{3,})'), r'\1 \2'),
-    # Closing paren followed by letter: ")Solar" → ") Solar"
+    # Number followed by "Units" without space
+    (re.compile(r'(\d)(Units?)\b', re.IGNORECASE), r'\1 \2'),
+    # "PV" followed by word without space
+    (re.compile(r'\bPV([A-Z][a-z]+)'), r'PV \1'),
+    # Closing paren followed by capital letter without space
     (re.compile(r'\)([A-Z][a-z]{2,})'), r') \1'),
+    # "SE)" followed by word - special case for "(SE)Solar"
+    (re.compile(r'\(SE\)([A-Za-z])'), r'(SE) \1'),
+    # "(SE" without closing paren followed by word - OCR missed the paren
+    (re.compile(r'\(SE([A-Z][a-z]+)'), r'(SE) \1'),
+    # Lowercase followed by "with" without space
+    (re.compile(r'([a-z])(with)\b', re.IGNORECASE), r'\1 \2'),
+    # Lowercase followed by "for" without space
+    (re.compile(r'([a-z])(for)\b', re.IGNORECASE), r'\1 \2'),
+    # Uppercase letter followed by lowercase word (acronym then word)
+    (re.compile(r'([A-Z]{2,})([A-Z][a-z]{3,})'), r'\1 \2'),
 ]
 ```
 
-**Application function** (lines 137-175):
+### Actual Code (app.py lines 137-177) - Application Function
 ```python
 def clean_ocr_text(text: str) -> str:
-    # Apply dictionary corrections first
-    for wrong, right in OCR_CORRECTIONS.items():
-        text = text.replace(wrong, right)
-    # Then apply regex patterns
+    """
+    Apply comprehensive OCR text cleaning and normalization.
+    """
+    if not text:
+        return text
+
+    cleaned = text
+
+    # Step 1: Apply dictionary-based corrections (exact matches)
+    for wrong, correct in OCR_CORRECTIONS.items():
+        if wrong in cleaned:
+            cleaned = cleaned.replace(wrong, correct)
+
+    # Step 2: Apply regex-based corrections (pattern matching)
     for pattern, replacement in REGEX_CORRECTIONS:
-        text = pattern.sub(replacement, text)
-    return text.strip()
+        cleaned = pattern.sub(replacement, cleaned)
+
+    # Step 3: Fix ampersand spacing: "word&word" -> "word & word"
+    cleaned = PATTERN_AMPERSAND.sub(r'\1 & \2', cleaned)
+
+    # Step 4: Normalize multiple spaces to single space
+    cleaned = re.sub(r' {2,}', ' ', cleaned)
+
+    # Step 5: Trim whitespace
+    cleaned = cleaned.strip()
+
+    return cleaned
 ```
 
-**Location:** `app.py` lines 80-175
+**Location:** `app.py` lines 80-177
 
 ---
 
@@ -147,17 +230,27 @@ def clean_ocr_text(text: str) -> str:
 **How Used:**
 - `/health` endpoint for container health checks
 - `/ocr` POST endpoint for image processing
+- `/detect-rotation` endpoint for Tesseract OSD
 - CORS configuration for frontend access
-- Request file handling
 
+### Actual Code (app.py lines 45-56)
 ```python
-@app.route('/ocr', methods=['POST'])
-def ocr_endpoint():
-    file = request.files.get('file')
-    # ... process and return JSON
+# -----------------------------------------------------------------------------
+# Flask Application Setup
+# -----------------------------------------------------------------------------
+app = Flask(__name__)
+app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
+
+# CORS: Allow all origins for development
+# In production, restrict to specific frontend domain
+CORS(app, resources={r"/*": {
+    "origins": "*",
+    "methods": ["GET", "POST", "OPTIONS"],
+    "allow_headers": ["Content-Type", "Accept", "X-Requested-With"]
+}})
 ```
 
-**Location:** `app.py` lines 48-50, 220-250
+**Location:** `app.py` lines 45-56
 
 ---
 
@@ -168,13 +261,28 @@ def ocr_endpoint():
 - Runs Flask app in production mode
 - Single worker (OCR is CPU-intensive)
 - Timeout configured for long OCR operations
+- Captures app stdout/stderr for logging
 
+### Actual Code (Dockerfile lines 56-70)
 ```dockerfile
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "1", 
-     "--timeout", "300", "app:app"]
+# Production server with gunicorn
+# - 1 worker (PaddleOCR is memory-intensive, single worker is safer)
+# - 120s timeout for long OCR operations
+# - graceful timeout for clean shutdowns
+# - log-level info to show app logs
+CMD ["gunicorn", \
+     "--bind", "0.0.0.0:5000", \
+     "--workers", "1", \
+     "--timeout", "120", \
+     "--graceful-timeout", "30", \
+     "--log-level", "info", \
+     "--access-logfile", "-", \
+     "--error-logfile", "-", \
+     "--capture-output", \
+     "app:app"]
 ```
 
-**Location:** `Dockerfile` CMD instruction
+**Location:** `Dockerfile` lines 56-70
 
 ---
 
@@ -351,13 +459,31 @@ npm run build # Production build
 - **Automatic EXIF rotation during conversion** (CRITICAL - see below)
 - Quality control for output size
 
+### Actual Code (frontend/services/geminiService.ts lines 441-462)
 ```typescript
-import heic2any from 'heic2any';
-const blob = await heic2any({
-  blob: file,
-  toType: 'image/jpeg',
-  quality: 0.85
-});
+if (isHeicFile) {
+  onLog?.('Detected HEIC image, converting to JPEG...', 'info');
+  try {
+    // heic2any handles EXIF rotation automatically during conversion
+    const blob = await heic2any({ blob: file, toType: 'image/jpeg', quality: 0.85 });
+    const processedBlob = Array.isArray(blob) ? blob[0] : blob;
+    let tempFile = new File([processedBlob], file.name.replace(/\.heic$/i, '.jpg'), { type: 'image/jpeg' });
+    const dims = await getImageDimensions(tempFile);
+    onLog?.(`HEIC converted: ${dims.width}x${dims.height} (EXIF rotation applied by converter)`, 'success');
+
+    // Resize very large images to prevent memory/size issues
+    const maxDimension = 4000;
+    if (dims.width > maxDimension || dims.height > maxDimension) {
+      onLog?.(`Resizing large image (>${maxDimension}px) for optimal processing...`, 'info');
+      tempFile = await resizeImageToMaxDimension(tempFile, maxDimension, onLog);
+    }
+    processedFile = tempFile;
+  } catch (e: any) {
+    onLog?.(`HEIC conversion failed: ${e.message}`, 'error');
+    console.error("HEIC conversion failed:", e);
+    isHeicFile = false; // Fall through to EXIF handling below
+  }
+}
 ```
 
 **CRITICAL: heic2any Already Applies EXIF Rotation**
@@ -366,25 +492,6 @@ This was a major bug source (see `mistakes_and_solutions.md` #1):
 - heic2any internally reads EXIF orientation and applies rotation
 - The output JPEG is already correctly oriented
 - **DO NOT apply additional EXIF rotation to HEIC-converted images**
-
-```typescript
-// WRONG - double rotation
-const orientation = await exifr.orientation(originalHeicFile);  // Still reads original EXIF!
-rotateImage(convertedJpeg, orientation);  // Image now rotated TWICE
-
-// CORRECT - skip EXIF rotation for HEIC files
-const isHeic = file.type === 'image/heic' || file.name.toLowerCase().endsWith('.heic');
-if (!isHeic) {
-  const orientation = await exifr.orientation(file);
-  rotateImage(processedFile, orientation);
-}
-```
-
-**Why This Matters:**
-1. `exifr.orientation(file)` reads from the **original** file, not the converted output
-2. The original HEIC still has orientation tag (e.g., 6 = 90° CW)
-3. heic2any already applied this rotation to the output
-4. Applying it again rotates image 90° beyond correct position
 
 **Location:** `frontend/services/geminiService.ts` lines 441-462
 
@@ -397,13 +504,38 @@ if (!isHeic) {
 - Extract orientation tag (1, 3, 6, 8)
 - Only used for non-HEIC files (heic2any handles HEIC)
 
+### Actual Code (frontend/services/geminiService.ts lines 465-491)
 ```typescript
-import * as exifr from 'exifr';
-const orientation = await exifr.orientation(file);
-// 1=normal, 3=180°, 6=90°CW, 8=270°CW
+// 2. EXIF Rotation - ONLY for non-HEIC files (heic2any already handles EXIF)
+if (!isHeicFile) {
+  let exifAngle = 0;
+  try {
+      const orientation = await exifr.orientation(originalFile);
+      if (orientation) {
+        onLog?.(`[Verbatim] EXIF Orientation tag: ${orientation}`, 'info');
+        // Standard EXIF orientation values:
+        // 1 = Normal (0°), 3 = 180°, 6 = 90° CW, 8 = 270° CW
+        switch (orientation) {
+            case 3: exifAngle = 180; break;
+            case 6: exifAngle = 90; break;
+            case 8: exifAngle = 270; break;
+        }
+      }
+  } catch (e: any) {
+      onLog?.(`EXIF read skipped: ${e.message || 'unknown error'}`, 'warn');
+  }
+
+  if (exifAngle !== 0) {
+      onLog?.(`Applying EXIF rotation correction (${exifAngle}°)...`, 'info');
+      processedFile = await rotateImageCanvas(processedFile, exifAngle);
+      onLog?.(`EXIF rotation applied successfully`, 'success');
+  } else {
+      onLog?.('No EXIF rotation needed', 'info');
+  }
+}
 ```
 
-**Location:** `frontend/services/geminiService.ts` lines 469-482
+**Location:** `frontend/services/geminiService.ts` lines 465-491
 
 ---
 
@@ -513,36 +645,58 @@ const csvOutput = useMemo(() => {
 }, [ocrTable, extractedText]);
 ```
 
-### SQL Output Generation (lines 226-244)
+### Actual Code: SQL Output Generation (frontend/App.tsx lines 226-244)
 ```typescript
 const sqlOutput = useMemo(() => {
-  const colNames = Array.from({ length: colCount }, (_, i) =>
-    `col_${String.fromCharCode(97 + i)}`  // col_a, col_b, etc.
-  );
-  const createTable = `CREATE TABLE IF NOT EXISTS ocr_results (\n  id SERIAL PRIMARY KEY,\n${colDefs}\n);`;
+  const tableName = 'ocr_results';
+  // Generate column names (col_a, col_b, etc.)
+  const colCount = ocrColumns || 1;
+  const colNames = Array.from({ length: colCount }, (_, i) => `col_${String.fromCharCode(97 + i)}`);
+  const colDefs = colNames.map(c => `  ${c} TEXT`).join(',\n');
+  const createTable = `-- Create table\nCREATE TABLE IF NOT EXISTS ${tableName} (\n  id SERIAL PRIMARY KEY,\n${colDefs}\n);\n\n-- Insert data\n`;
+
+  if (!ocrTable.length) {
+    const escaped = extractedText.replace(/'/g, "''");
+    return createTable + `INSERT INTO ${tableName} (col_a) VALUES ('${escaped}');`;
+  }
+
   const inserts = ocrTable.map(row => {
-    const values = row.cells.map((cell: string) => `'${cell.replace(/'/g, "''")}'`).join(', ');
-    return `INSERT INTO ocr_results (${colNames.join(', ')}) VALUES (${values});`;
+    const values = row.cells.map((cell: string) => `'${(cell || '').replace(/'/g, "''")}'`).join(', ');
+    return `INSERT INTO ${tableName} (${colNames.join(', ')}) VALUES (${values});`;
   });
-  return createTable + '\n\n' + inserts.join('\n');
-}, [ocrTable, ocrColumns]);
+  return createTable + inserts.join('\n');
+}, [ocrTable, ocrColumns, extractedText]);
 ```
 
-### XLSX Export (lines 259-286)
+### Actual Code: XLSX Export (frontend/App.tsx lines 259-286)
 ```typescript
 const handleDownloadXLSX = async () => {
-  const XLSX = await import('xlsx');  // Dynamic import
-  const data = ocrTable.map(row => {
-    const rowObj: Record<string, string> = {};
-    row.cells.forEach((cell: string, i: number) => {
-      rowObj[String.fromCharCode(65 + i)] = cell || '';  // A, B, C...
-    });
-    return rowObj;
-  });
-  const ws = XLSX.utils.json_to_sheet(data);
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, 'OCR Results');
-  XLSX.writeFile(wb, 'ocr_results.xlsx');
+  try {
+    // Dynamic import for xlsx library
+    const XLSX = await import('xlsx');
+    let data: any[];
+
+    if (ocrTable.length) {
+      // Use table structure - each row.cells becomes a row in Excel
+      data = ocrTable.map(row => {
+        const rowObj: Record<string, string> = {};
+        row.cells.forEach((cell: string, i: number) => {
+          rowObj[String.fromCharCode(65 + i)] = cell || '';
+        });
+        return rowObj;
+      });
+    } else {
+      data = [{ A: extractedText }];
+    }
+
+    const ws = XLSX.utils.json_to_sheet(data);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'OCR Results');
+    XLSX.writeFile(wb, 'ocr_results.xlsx');
+    addLog('Downloaded ocr_results.xlsx', 'success');
+  } catch (e: any) {
+    addLog(`XLSX export failed: ${e.message}`, 'error');
+  }
 };
 ```
 

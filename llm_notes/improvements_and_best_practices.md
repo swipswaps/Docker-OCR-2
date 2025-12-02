@@ -71,16 +71,22 @@ test('visual regression - document viewer', async ({ page }) => {
 
 ## 2. Image Processing Improvements
 
-### Current State
-- HEIC detection by filename only
-- Fixed resize threshold (4000px)
-- Quality hardcoded to 0.85
+### Current State (frontend/services/geminiService.ts lines 436-440)
+```typescript
+// Current: HEIC detection by filename/MIME type only
+let isHeicFile = file.name.toLowerCase().endsWith('.heic') || file.type === 'image/heic';
+```
 
 ### Recommended Improvements
 
 #### 2.1 Detect HEIC by Magic Bytes
 ```typescript
 async function isHeicFile(file: File): Promise<boolean> {
+  // Check file extension first (fast path)
+  if (file.name.toLowerCase().endsWith('.heic') || file.type === 'image/heic') {
+    return true;
+  }
+  // Fallback: check magic bytes for misnamed files
   const buffer = await file.slice(0, 12).arrayBuffer();
   const view = new DataView(buffer);
   // Check for 'ftyp' box and HEIC brand
@@ -120,10 +126,14 @@ async function rotateWithExifPreservation(file: File, angle: number): Promise<Fi
 
 ## 3. Backend OCR Improvements
 
-### Current State
-- Fixed Y-gap threshold (1.2x median height)
-- No confidence-based filtering
-- Single-pass text cleaning
+### Current State (app.py lines 622-625)
+```python
+# Current: Fixed Y-gap threshold (1.2x median height)
+# Determine Y gap threshold for separating cards
+# Use 1.2x median height to capture more card breaks (lowered from 1.5)
+y_gap_threshold = median_height * 1.2
+emit_log(f"[DEBUG] Y gap threshold for card separation: {y_gap_threshold:.0f}px (median_height={median_height:.0f})")
+```
 
 ### Recommended Improvements
 
@@ -232,11 +242,22 @@ def spell_check_pass(text: str, domain_words: set) -> str:
 
 ## 4. Output Tab Improvements
 
-### Current State
-- 5 tabs: Text, JSON, CSV, XLSX, SQL
-- Basic formatting
-- No column headers
-- SQL generates generic column names (col_a, col_b)
+### Current State (frontend/App.tsx lines 226-244)
+```typescript
+// Current: SQL generates generic column names (col_a, col_b, etc.)
+const sqlOutput = useMemo(() => {
+  const tableName = 'ocr_results';
+  const colCount = ocrColumns || 1;
+  const colNames = Array.from({ length: colCount }, (_, i) => `col_${String.fromCharCode(97 + i)}`);
+  const colDefs = colNames.map(c => `  ${c} TEXT`).join(',\n');
+  // ...
+}, [ocrTable, ocrColumns, extractedText]);
+```
+
+**Current Limitations:**
+- No column headers detected from data
+- SQL uses generic col_a, col_b names
+- No Markdown table export
 
 ### Recommended Improvements
 
@@ -307,11 +328,20 @@ const markdownOutput = useMemo(() => {
 
 ## 5. Docker Improvements
 
-### Current State
-- Single worker (CPU-bound OCR)
-- 300s timeout
-- No GPU support
-- No model caching between rebuilds
+### Current State (Dockerfile lines 56-70)
+```dockerfile
+# Current: Single worker, 120s timeout, no GPU, no model caching
+CMD ["gunicorn", \
+     "--bind", "0.0.0.0:5000", \
+     "--workers", "1", \
+     "--timeout", "120", \
+     "--graceful-timeout", "30", \
+     "--log-level", "info", \
+     "--access-logfile", "-", \
+     "--error-logfile", "-", \
+     "--capture-output", \
+     "app:app"]
+```
 
 ### Recommended Improvements
 

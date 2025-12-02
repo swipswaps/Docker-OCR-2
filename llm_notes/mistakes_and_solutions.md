@@ -24,22 +24,63 @@ if (orientation === 6) {
 }
 ```
 
-### Solution
-Skip EXIF rotation entirely for HEIC files since `heic2any` handles it automatically:
-
+### Correct Code (frontend/services/geminiService.ts lines 436-491)
 ```typescript
-let isHeicFile = file.name.toLowerCase().endsWith('.heic');
+// 1. Convert HEIC with smart resizing for large images
+// NOTE: heic2any automatically applies EXIF rotation during conversion,
+// so we must NOT apply EXIF rotation again for HEIC files.
+let isHeicFile = file.name.toLowerCase().endsWith('.heic') || file.type === 'image/heic';
 
 if (isHeicFile) {
-  // heic2any handles EXIF rotation automatically during conversion
-  const blob = await heic2any({ blob: file, toType: 'image/jpeg', quality: 0.85 });
-  // ... rest of HEIC handling
+  onLog?.('Detected HEIC image, converting to JPEG...', 'info');
+  try {
+    // heic2any handles EXIF rotation automatically during conversion
+    const blob = await heic2any({ blob: file, toType: 'image/jpeg', quality: 0.85 });
+    const processedBlob = Array.isArray(blob) ? blob[0] : blob;
+    let tempFile = new File([processedBlob], file.name.replace(/\.heic$/i, '.jpg'), { type: 'image/jpeg' });
+    const dims = await getImageDimensions(tempFile);
+    onLog?.(`HEIC converted: ${dims.width}x${dims.height} (EXIF rotation applied by converter)`, 'success');
+
+    // Resize very large images to prevent memory/size issues
+    const maxDimension = 4000;
+    if (dims.width > maxDimension || dims.height > maxDimension) {
+      onLog?.(`Resizing large image (>${maxDimension}px) for optimal processing...`, 'info');
+      tempFile = await resizeImageToMaxDimension(tempFile, maxDimension, onLog);
+    }
+    processedFile = tempFile;
+  } catch (e: any) {
+    onLog?.(`HEIC conversion failed: ${e.message}`, 'error');
+    console.error("HEIC conversion failed:", e);
+    isHeicFile = false; // Fall through to EXIF handling below
+  }
 }
 
-// ONLY apply EXIF rotation for non-HEIC files
+// 2. EXIF Rotation - ONLY for non-HEIC files (heic2any already handles EXIF)
 if (!isHeicFile) {
-  const orientation = await exifr.orientation(originalFile);
-  // ... apply rotation
+  let exifAngle = 0;
+  try {
+      const orientation = await exifr.orientation(originalFile);
+      if (orientation) {
+        onLog?.(`[Verbatim] EXIF Orientation tag: ${orientation}`, 'info');
+        // Standard EXIF orientation values:
+        // 1 = Normal (0°), 3 = 180°, 6 = 90° CW, 8 = 270° CW
+        switch (orientation) {
+            case 3: exifAngle = 180; break;
+            case 6: exifAngle = 90; break;
+            case 8: exifAngle = 270; break;
+        }
+      }
+  } catch (e: any) {
+      onLog?.(`EXIF read skipped: ${e.message || 'unknown error'}`, 'warn');
+  }
+
+  if (exifAngle !== 0) {
+      onLog?.(`Applying EXIF rotation correction (${exifAngle}°)...`, 'info');
+      processedFile = await rotateImageCanvas(processedFile, exifAngle);
+      onLog?.(`EXIF rotation applied successfully`, 'success');
+  } else {
+      onLog?.('No EXIF rotation needed', 'info');
+  }
 }
 ```
 
@@ -58,24 +99,32 @@ After EXIF rotation correctly fixed image orientation, the OSD (Orientation Scri
 - This passed the 30% threshold check, so the (incorrect) rotation was applied
 - OSD was "confidently wrong" about text orientation
 
-### Solution
-Skip OSD entirely for Docker engine because:
-1. EXIF rotation already handles camera orientation correction
-2. PaddleOCR handles text orientation internally (can read text at any angle)
-3. OSD was causing problems by incorrectly "re-rotating" already-corrected images
-
+### Correct Code (frontend/services/geminiService.ts lines 493-510)
 ```typescript
-// For Docker engine, skip OSD - PaddleOCR handles orientation internally
+// 3. Optimization Path for Docker
 if (engine === 'docker') {
-  return processedFile; // Skip OSD
+    onLog?.('Engine: Docker. Skipping frontend enhancements to prevent backend conflicts.', 'info');
+    // Compress large images to stay within backend upload limit (50MB, target 30MB for safety)
+    processedFile = await compressImageForUpload(processedFile, 30, onLog);
+    return processedFile;
 }
 
-// Only use OSD for Tesseract fallback
+// 4. Tesseract Path: OSD Check + Enhancements
+onLog?.('Stage 2: Checking visual orientation (OSD)...', 'info');
 const osdAngle = await detectOrientationOSD(processedFile, onLog);
+if (osdAngle !== 0) {
+    const correctionAngle = 360 - osdAngle;
+    if (correctionAngle !== 0 && correctionAngle !== 360) {
+      onLog?.(`OSD Correction Needed. Rotating ${correctionAngle}°...`, 'info');
+      processedFile = await rotateImageCanvas(processedFile, correctionAngle);
+    }
+}
 ```
 
+**Key Point:** Docker engine returns early at line 498, skipping OSD entirely. Only Tesseract path uses OSD.
+
 ### File Changed
-`frontend/App.tsx`, `frontend/services/geminiService.ts`
+`frontend/services/geminiService.ts` (lines 493-510)
 
 ---
 
@@ -96,17 +145,28 @@ Column 0 Y gaps (largest 10): [198, 166, 151, 142, 112, 82, 68, 64, 59, 59]
 Cards per column: [5]  <-- Should be [6]
 ```
 
-### Solution
-Lower the multiplier from 1.5x to 1.2x median height:
-
+### Correct Code (app.py lines 622-637)
 ```python
-# Before: y_gap_threshold = median_height * 1.5  # 124px
-# After:
-y_gap_threshold = median_height * 1.2  # 100px - captures 112px gap as row break
+# Determine Y gap threshold for separating cards
+# Cards on the same sheet are separated by visible gaps (usually >100px)
+# Lines within a card are close together (usually <80px)
+# Use 1.2x median height to capture more card breaks (lowered from 1.5)
+y_gap_threshold = median_height * 1.2
+emit_log(f"[DEBUG] Y gap threshold for card separation: {y_gap_threshold:.0f}px (median_height={median_height:.0f})")
+
+# Cluster blocks within each column
+column_cards = {}
+max_cards_per_col = 0
+for col_idx in range(num_cols):
+    cards = cluster_column_blocks(columns[col_idx], y_gap_threshold, col_idx, emit_debug=True)
+    column_cards[col_idx] = cards
+    max_cards_per_col = max(max_cards_per_col, len(cards))
+
+emit_log(f"[DEBUG] Cards per column: {[len(column_cards[i]) for i in range(num_cols)]}")
 ```
 
 ### File Changed
-`app.py` (line 626)
+`app.py` (lines 622-637)
 
 ---
 
@@ -119,26 +179,81 @@ User repeatedly asked to use Playwright/Selenium for debugging, but the LLM init
 - Overconfidence in code-level debugging
 - Not setting up automated visual testing from the start
 
-### Solution
-Created Playwright E2E test (`debug-rotation.spec.ts`) that:
-1. Uploads HEIC file
-2. Takes screenshots at each processing stage
-3. Verifies image orientation visually
-4. Checks OCR output row count
-
+### Correct Code (frontend/tests/debug-rotation.spec.ts)
 ```typescript
-test('HEIC upload and rotation debug', async ({ page }) => {
-  // Upload file
-  await page.setInputFiles('input[type="file"]', heicPath);
-  
-  // Take screenshots at each stage
-  await page.screenshot({ path: '/tmp/step1-after-upload.png' });
-  // ... wait for processing
-  await page.screenshot({ path: '/tmp/step2-after-ocr.png' });
-  
-  // Verify results
-  const rows = await page.locator('.result-row').count();
-  expect(rows).toBe(6);
+import { test, expect } from '@playwright/test';
+import * as fs from 'fs';
+import * as path from 'path';
+
+/**
+ * Debug test for IMG_0371.heic rotation issue
+ * Takes screenshots at each processing step to diagnose orientation problems
+ */
+test('Debug IMG_0371 rotation', async ({ page }) => {
+  const screenshotDir = '/tmp/rotation-debug';
+  if (!fs.existsSync(screenshotDir)) {
+    fs.mkdirSync(screenshotDir, { recursive: true });
+  }
+
+  console.log('\n═══════════════════════════════════════════════════');
+  console.log('🔍 DEBUG: IMG_0371.heic Rotation Test');
+  console.log('═══════════════════════════════════════════════════\n');
+
+  const logs: string[] = [];
+
+  // Capture all console messages
+  page.on('console', (msg) => {
+    const text = msg.text();
+    logs.push(text);
+    if (text.includes('[') || text.includes('HEIC') || text.includes('EXIF') ||
+        text.includes('rotation') || text.includes('Rotation') || text.includes('orientation')) {
+      console.log(`  [APP] ${text}`);
+    }
+  });
+
+  // Navigate to the app (try multiple ports)
+  const ports = [3003, 5173, 3000];
+  let connected = false;
+  for (const port of ports) {
+    try {
+      await page.goto(`http://localhost:${port}`, { timeout: 5000 });
+      console.log(`✅ Connected on port ${port}`);
+      connected = true;
+      break;
+    } catch {
+      console.log(`Port ${port} not available, trying next...`);
+    }
+  }
+  if (!connected) throw new Error('No dev server found on ports 3003, 5173, or 3000');
+
+  // Wait for Docker connection
+  try {
+    await page.waitForSelector('text=DOCKER ACTIVE', { timeout: 15000 });
+    console.log('✅ Docker backend connected\n');
+  } catch {
+    console.log('⚠️ Docker not detected, waiting for Tesseract...\n');
+  }
+
+  // Find and upload the file
+  const heicFilePath = '/home/owner/Downloads/IMG_0371.heic';
+  const fileInput = page.locator('input[type="file"]');
+  await fileInput.waitFor({ state: 'attached', timeout: 10000 });
+  await fileInput.setInputFiles(heicFilePath);
+
+  // Screenshot at each stage
+  await page.waitForTimeout(1000);
+  await page.screenshot({ path: `${screenshotDir}/01-upload.png`, fullPage: true });
+  await page.waitForTimeout(15000);
+  await page.screenshot({ path: `${screenshotDir}/02-heic-converted.png`, fullPage: true });
+  await page.waitForTimeout(30000);
+  await page.screenshot({ path: `${screenshotDir}/03-ocr-complete.png`, fullPage: true });
+
+  // Analyze logs for debugging
+  const heicLog = logs.find(l => l.includes('HEIC converted'));
+  const exifLog = logs.find(l => l.includes('EXIF Orientation'));
+  console.log(`  HEIC: ${heicLog || 'not found'}`);
+  console.log(`  EXIF Tag: ${exifLog || 'not found'}`);
+  console.log(`\n📁 Screenshots saved to: ${screenshotDir}`);
 });
 ```
 
@@ -152,23 +267,34 @@ test('HEIC upload and rotation debug', async ({ page }) => {
 ### Problem
 HEIC images from iPhones can be very large. After conversion to JPEG, a 31.48MB file was rejected with `413 - File too large`.
 
-### Solution
-1. Increase backend `MAX_CONTENT_LENGTH` from 16MB to **50MB**
-2. Add frontend image resizing for images >4000px
-3. Add frontend compression for images >30MB
-
+### Correct Code (app.py lines 23-31)
 ```python
-# app.py
-MAX_CONTENT_LENGTH = 50 * 1024 * 1024  # 50 MB
+# -----------------------------------------------------------------------------
+# Configuration
+# -----------------------------------------------------------------------------
+MAX_CONTENT_LENGTH = 50 * 1024 * 1024  # 50 MB max file size (supports high-res images)
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'tiff', 'tif'}
+ALLOWED_MIMETYPES = {
+    'image/png', 'image/jpeg', 'image/gif', 'image/bmp',
+    'image/webp', 'image/tiff'
+}
 ```
 
+### Correct Code (frontend/services/geminiService.ts lines 451-457)
 ```typescript
-// geminiService.ts
+// Resize very large images to prevent memory/size issues
 const maxDimension = 4000;
 if (dims.width > maxDimension || dims.height > maxDimension) {
-  tempFile = await resizeImageToMaxDimension(tempFile, maxDimension);
+  onLog?.(`Resizing large image (>${maxDimension}px) for optimal processing...`, 'info');
+  tempFile = await resizeImageToMaxDimension(tempFile, maxDimension, onLog);
 }
-processedFile = await compressImageForUpload(processedFile, 30); // 30MB target
+processedFile = tempFile;
+```
+
+### Correct Code (frontend/services/geminiService.ts line 497)
+```typescript
+// Compress large images to stay within backend upload limit (50MB, target 30MB for safety)
+processedFile = await compressImageForUpload(processedFile, 30, onLog);
 ```
 
 ---
@@ -178,20 +304,23 @@ processedFile = await compressImageForUpload(processedFile, 30); // 30MB target
 ### Problem
 Playwright test couldn't connect because it was trying the wrong port.
 
-### Solution
-Try multiple common ports:
-
+### Correct Code (frontend/tests/debug-rotation.spec.ts lines 32-44)
 ```typescript
+// Navigate to the app (try multiple ports)
 const ports = [3003, 5173, 3000];
+let connected = false;
 for (const port of ports) {
   try {
-    await page.goto(`http://localhost:${port}`);
+    await page.goto(`http://localhost:${port}`, { timeout: 5000 });
+    console.log(`✅ Connected on port ${port}`);
+    connected = true;
     break;
-  } catch { continue; }
+  } catch {
+    console.log(`Port ${port} not available, trying next...`);
+  }
 }
+if (!connected) throw new Error('No dev server found on ports 3003, 5173, or 3000');
 ```
-
----
 
 ---
 
@@ -204,13 +333,22 @@ When the Y-gap threshold was causing row merging, it was difficult to understand
 - Debug logging for gap values was wrapped in `if emit_debug:` which wasn't enabled by default
 - Had to modify code to always emit debug info, rebuild Docker, then test
 
-### Solution
-Add verbose debug logging that's always emitted during development:
-
+### Correct Code (app.py lines 622-637)
 ```python
-# Always emit Y gaps for debugging
-gaps_sorted = sorted(gaps, reverse=True)
-emit_log(f"[DEBUG] Column {col_idx} Y gaps (largest 10): {gaps_sorted[:10]}")
+# Determine Y gap threshold for separating cards
+# Use 1.2x median height to capture more card breaks (lowered from 1.5)
+y_gap_threshold = median_height * 1.2
+emit_log(f"[DEBUG] Y gap threshold for card separation: {y_gap_threshold:.0f}px (median_height={median_height:.0f})")
+
+# Cluster blocks within each column
+column_cards = {}
+max_cards_per_col = 0
+for col_idx in range(num_cols):
+    cards = cluster_column_blocks(columns[col_idx], y_gap_threshold, col_idx, emit_debug=True)
+    column_cards[col_idx] = cards
+    max_cards_per_col = max(max_cards_per_col, len(cards))
+
+emit_log(f"[DEBUG] Cards per column: {[len(column_cards[i]) for i in range(num_cols)]}")
 ```
 
 **Debug output that helped diagnose:**
@@ -222,7 +360,7 @@ emit_log(f"[DEBUG] Column {col_idx} Y gaps (largest 10): {gaps_sorted[:10]}")
 This showed the 112px gap was just below the 124px threshold, causing the merge.
 
 ### File Changed
-`app.py` lines 590-598
+`app.py` lines 622-637
 
 ### Related: Gunicorn Log Capture
 
@@ -230,22 +368,38 @@ Another logging issue: Python `print()` and `logging` output wasn't visible in `
 
 **Root Cause:** Gunicorn doesn't capture application stdout/stderr by default.
 
-**Solution (Dockerfile):**
+### Correct Code (Dockerfile lines 56-70)
 ```dockerfile
+# Production server with gunicorn
+# - 1 worker (PaddleOCR is memory-intensive, single worker is safer)
+# - 120s timeout for long OCR operations
+# - graceful timeout for clean shutdowns
+# - log-level info to show app logs
 CMD ["gunicorn", \
-     "--capture-output", \    # CRITICAL: Captures app stdout/stderr
+     "--bind", "0.0.0.0:5000", \
+     "--workers", "1", \
+     "--timeout", "120", \
+     "--graceful-timeout", "30", \
      "--log-level", "info", \
      "--access-logfile", "-", \
      "--error-logfile", "-", \
+     "--capture-output", \
      "app:app"]
 ```
 
-**Solution (app.py):**
+### Correct Code (app.py lines 33-43)
 ```python
-# Explicit StreamHandler to stderr (gunicorn captures this)
+# Configure logging - use stderr so gunicorn captures it with --capture-output
+# Create handler explicitly for reliable output
 handler = logging.StreamHandler(sys.stderr)
+handler.setLevel(logging.INFO)
+handler.setFormatter(logging.Formatter('[%(asctime)s] [%(levelname)7s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S'))
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 logger.addHandler(handler)
-logger.propagate = False  # Prevent duplicate logs
+# Prevent duplicate logs from root logger
+logger.propagate = False
 ```
 
 ---
