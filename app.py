@@ -4,6 +4,7 @@ DockerOCR Backend - PaddleOCR REST API Service
 A production-ready Flask API for optical character recognition using PaddleOCR.
 Includes Tesseract OSD for rotation detection.
 """
+
 import logging
 import sys
 import base64
@@ -24,17 +25,25 @@ import numpy as np
 # Configuration
 # -----------------------------------------------------------------------------
 MAX_CONTENT_LENGTH = 50 * 1024 * 1024  # 50 MB max file size (supports high-res images)
-ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'tiff', 'tif'}
+ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "gif", "bmp", "webp", "tiff", "tif"}
 ALLOWED_MIMETYPES = {
-    'image/png', 'image/jpeg', 'image/gif', 'image/bmp',
-    'image/webp', 'image/tiff'
+    "image/png",
+    "image/jpeg",
+    "image/gif",
+    "image/bmp",
+    "image/webp",
+    "image/tiff",
 }
 
 # Configure logging - use stderr so gunicorn captures it with --capture-output
 # Create handler explicitly for reliable output
 handler = logging.StreamHandler(sys.stderr)
 handler.setLevel(logging.INFO)
-handler.setFormatter(logging.Formatter('[%(asctime)s] [%(levelname)7s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S'))
+handler.setFormatter(
+    logging.Formatter(
+        "[%(asctime)s] [%(levelname)7s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
+    )
+)
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -46,7 +55,7 @@ logger.propagate = False
 # Flask Application Setup
 # -----------------------------------------------------------------------------
 app = Flask(__name__)
-app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
+app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_LENGTH
 
 # CORS configuration - adjust origins for production
 CORS(app, resources={r"/*": {"origins": "*"}}, methods=["GET", "POST", "OPTIONS"])
@@ -60,77 +69,77 @@ CORS(app, resources={r"/*": {"origins": "*"}}, methods=["GET", "POST", "OPTIONS"
 
 # Pattern 1: Add space around special characters like & that are adjacent to letters
 # Example: "Frames&Temper" -> "Frames & Temper"
-PATTERN_AMPERSAND = re.compile(r'(\w)&(\w)')
+PATTERN_AMPERSAND = re.compile(r"(\w)&(\w)")
 
 # Pattern 2: Add space before common words that are merged with previous word
 # Example: "Unusedwith" -> "Unused with", "WSolar" -> "W Solar"
 PATTERN_MERGED_WORDS = re.compile(
-    r'([a-z])([A-Z][a-z])|'  # camelCase: "unusedWith" -> "unused With"
-    r'(\))([A-Za-z])|'        # closeParen+letter: ")Solar" -> ") Solar"
-    r'([A-Z])([A-Z][a-z])'    # ACRONYMWord: "SESolar" -> "SE Solar"
+    r"([a-z])([A-Z][a-z])|"  # camelCase: "unusedWith" -> "unused With"
+    r"(\))([A-Za-z])|"  # closeParen+letter: ")Solar" -> ") Solar"
+    r"([A-Z])([A-Z][a-z])"  # ACRONYMWord: "SESolar" -> "SE Solar"
 )
 
 # Pattern 3: Add space between number and letter (when not part of model number)
 # Example: "928Panels" -> "928 Panels", but keep "370-395w" as is
-PATTERN_NUMBER_WORD = re.compile(r'(\d)([A-Za-z]{3,})')  # Only if 3+ letters follow
+PATTERN_NUMBER_WORD = re.compile(r"(\d)([A-Za-z]{3,})")  # Only if 3+ letters follow
 
 # Pattern 4: Add space after closing paren before word
-PATTERN_PAREN_WORD = re.compile(r'\)([A-Za-z])')
+PATTERN_PAREN_WORD = re.compile(r"\)([A-Za-z])")
 
 # TOOL: Dictionary-based OCR error corrections
 # Common OCR misrecognitions - industry-specific terms
 OCR_CORRECTIONS = {
     # Common letter substitutions
-    'Enerqy': 'Energy',
-    'enerqy': 'energy',
-    'Paneis': 'Panels',
-    'paneis': 'panels',
-    'lnverter': 'Inverter',
-    'lnverters': 'Inverters',
-    'Siemens': 'Siemens',  # Often misread
-    '10Ok': '100k',
-    '10oK': '100K',
-    'l0Ok': '100k',
+    "Enerqy": "Energy",
+    "enerqy": "energy",
+    "Paneis": "Panels",
+    "paneis": "panels",
+    "lnverter": "Inverter",
+    "lnverters": "Inverters",
+    "Siemens": "Siemens",  # Often misread
+    "10Ok": "100k",
+    "10oK": "100K",
+    "l0Ok": "100k",
     # Common merged words in solar industry
-    'WSolar': 'W Solar',
-    'wSolar': 'w Solar',
-    'MBattery': 'M Battery',
-    'PVModules': 'PV Modules',
-    'PVmodules': 'PV modules',
-    'kVA': 'kVA',  # Keep as-is
+    "WSolar": "W Solar",
+    "wSolar": "w Solar",
+    "MBattery": "M Battery",
+    "PVModules": "PV Modules",
+    "PVmodules": "PV modules",
+    "kVA": "kVA",  # Keep as-is
     # Space before common words when merged
-    'Unusedwith': 'Unused with',
-    'unusedwith': 'unused with',
-    'Usedwith': 'Used with',
-    'usedwith': 'used with',
+    "Unusedwith": "Unused with",
+    "unusedwith": "unused with",
+    "Usedwith": "Used with",
+    "usedwith": "used with",
 }
 
 # TOOL: Regex replacements for context-aware fixes
 # These require regex patterns for flexible matching
 REGEX_CORRECTIONS = [
     # "WSolar" or "wSolar" anywhere
-    (re.compile(r'\bW(Solar|Panels?|Inverters?|Energy)\b', re.IGNORECASE), r'W \1'),
+    (re.compile(r"\bW(Solar|Panels?|Inverters?|Energy)\b", re.IGNORECASE), r"W \1"),
     # "MBattery" pattern
-    (re.compile(r'\bM(Battery|Inverter)\b', re.IGNORECASE), r'M \1'),
+    (re.compile(r"\bM(Battery|Inverter)\b", re.IGNORECASE), r"M \1"),
     # Number followed by "Panels" without space
-    (re.compile(r'(\d)(Panels?)\b', re.IGNORECASE), r'\1 \2'),
+    (re.compile(r"(\d)(Panels?)\b", re.IGNORECASE), r"\1 \2"),
     # Number followed by "Units" without space
-    (re.compile(r'(\d)(Units?)\b', re.IGNORECASE), r'\1 \2'),
+    (re.compile(r"(\d)(Units?)\b", re.IGNORECASE), r"\1 \2"),
     # "PV" followed by word without space
-    (re.compile(r'\bPV([A-Z][a-z]+)'), r'PV \1'),
+    (re.compile(r"\bPV([A-Z][a-z]+)"), r"PV \1"),
     # Closing paren followed by capital letter without space
-    (re.compile(r'\)([A-Z][a-z]{2,})'), r') \1'),
+    (re.compile(r"\)([A-Z][a-z]{2,})"), r") \1"),
     # "SE)" followed by word - special case for "(SE)Solar"
-    (re.compile(r'\(SE\)([A-Za-z])'), r'(SE) \1'),
+    (re.compile(r"\(SE\)([A-Za-z])"), r"(SE) \1"),
     # "(SE" without closing paren followed by word - OCR missed the paren
-    (re.compile(r'\(SE([A-Z][a-z]+)'), r'(SE) \1'),
+    (re.compile(r"\(SE([A-Z][a-z]+)"), r"(SE) \1"),
     # Lowercase followed by "with" without space
-    (re.compile(r'([a-z])(with)\b', re.IGNORECASE), r'\1 \2'),
+    (re.compile(r"([a-z])(with)\b", re.IGNORECASE), r"\1 \2"),
     # Lowercase followed by "for" without space
-    (re.compile(r'([a-z])(for)\b', re.IGNORECASE), r'\1 \2'),
+    (re.compile(r"([a-z])(for)\b", re.IGNORECASE), r"\1 \2"),
     # Uppercase letter followed by lowercase word (acronym then word)
     # Example: "SESolar" -> "SE Solar", but not "Solar"
-    (re.compile(r'([A-Z]{2,})([A-Z][a-z]{3,})'), r'\1 \2'),
+    (re.compile(r"([A-Z]{2,})([A-Z][a-z]{3,})"), r"\1 \2"),
 ]
 
 
@@ -166,10 +175,10 @@ def clean_ocr_text(text: str) -> str:
         cleaned = pattern.sub(replacement, cleaned)
 
     # Step 3: Fix ampersand spacing: "word&word" -> "word & word"
-    cleaned = PATTERN_AMPERSAND.sub(r'\1 & \2', cleaned)
+    cleaned = PATTERN_AMPERSAND.sub(r"\1 & \2", cleaned)
 
     # Step 4: Normalize multiple spaces to single space
-    cleaned = re.sub(r' {2,}', ' ', cleaned)
+    cleaned = re.sub(r" {2,}", " ", cleaned)
 
     # Step 5: Trim whitespace
     cleaned = cleaned.strip()
@@ -187,20 +196,20 @@ def init_ocr_engine():
         # CPU-optimized settings from working DockerOCR project
         # CRITICAL: use_angle_cls=False to avoid "could not execute a primitive" on some CPUs
         engine = PaddleOCR(
-            use_angle_cls=False,     # Disabled - causes CPU issues; rotation handled by Tesseract OSD
-            lang='en',
+            use_angle_cls=False,  # Disabled - causes CPU issues; rotation handled by Tesseract OSD
+            lang="en",
             use_gpu=False,
             show_log=False,
-            enable_mkldnn=False,     # Disable MKL-DNN to avoid CPU instruction issues
-            cpu_threads=1,           # Single thread to avoid race conditions
-            use_tensorrt=False,      # Disable TensorRT
-            use_mp=False,            # Disable multiprocessing
+            enable_mkldnn=False,  # Disable MKL-DNN to avoid CPU instruction issues
+            cpu_threads=1,  # Single thread to avoid race conditions
+            use_tensorrt=False,  # Disable TensorRT
+            use_mp=False,  # Disable multiprocessing
             # Higher detection limits for high-resolution images (e.g., phone photos)
-            det_limit_side_len=2560, # Increased from 960 to handle 4K images
-            det_limit_type='max',
-            det_db_thresh=0.3,       # Lower threshold to detect more text regions
-            det_db_box_thresh=0.5,   # Box confidence threshold
-            rec_batch_num=6,         # Recognition batch size
+            det_limit_side_len=2560,  # Increased from 960 to handle 4K images
+            det_limit_type="max",
+            det_db_thresh=0.3,  # Lower threshold to detect more text regions
+            det_db_box_thresh=0.5,  # Box confidence threshold
+            rec_batch_num=6,  # Recognition batch size
         )
         logger.info("PaddleOCR initialized successfully.")
         return engine
@@ -217,7 +226,7 @@ ocr = init_ocr_engine()
 # -----------------------------------------------------------------------------
 def allowed_file(filename: str) -> bool:
     """Check if file extension is allowed."""
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+    return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
 
 
 def validate_image_file(file) -> tuple[bool, str]:
@@ -225,7 +234,7 @@ def validate_image_file(file) -> tuple[bool, str]:
     Validate uploaded file is a legitimate image.
     Returns (is_valid, error_message).
     """
-    if not file or file.filename == '':
+    if not file or file.filename == "":
         return False, "No file selected"
 
     if not allowed_file(file.filename):
@@ -242,17 +251,15 @@ def validate_image_file(file) -> tuple[bool, str]:
 request_logs = threading.local()
 
 
-def emit_log(message: str, level: str = 'info'):
+def emit_log(message: str, level: str = "info"):
     """Emit a log message to stderr and collect for response."""
-    timestamp = time.strftime('%H:%M:%S')
+    timestamp = time.strftime("%H:%M:%S")
     logger.info(message)
     # Collect log for response
-    if hasattr(request_logs, 'logs'):
-        request_logs.logs.append({
-            'timestamp': timestamp,
-            'level': level,
-            'message': message
-        })
+    if hasattr(request_logs, "logs"):
+        request_logs.logs.append(
+            {"timestamp": timestamp, "level": level, "message": message}
+        )
 
 
 # -----------------------------------------------------------------------------
@@ -260,24 +267,24 @@ def emit_log(message: str, level: str = 'info'):
 # -----------------------------------------------------------------------------
 
 
-@app.route('/health', methods=['GET'])
+@app.route("/health", methods=["GET"])
 def health():
     """Health check endpoint for container orchestration."""
     if ocr is None:
-        return jsonify({
-            "status": "unhealthy",
-            "service": "paddleocr",
-            "error": "Engine failed to initialize"
-        }), 503
+        return jsonify(
+            {
+                "status": "unhealthy",
+                "service": "paddleocr",
+                "error": "Engine failed to initialize",
+            }
+        ), 503
 
-    return jsonify({
-        "status": "healthy",
-        "service": "paddleocr",
-        "version": "1.0.0"
-    }), 200
+    return jsonify(
+        {"status": "healthy", "service": "paddleocr", "version": "1.0.0"}
+    ), 200
 
 
-@app.route('/detect-rotation', methods=['POST'])
+@app.route("/detect-rotation", methods=["POST"])
 def detect_rotation():
     """
     Detect image orientation using Tesseract OSD (Orientation and Script Detection).
@@ -295,22 +302,22 @@ def detect_rotation():
         logger.info("Rotation detection request received")
 
         data = request.get_json()
-        if not data or 'image' not in data:
-            return jsonify({'error': 'No image data provided'}), 400
+        if not data or "image" not in data:
+            return jsonify({"error": "No image data provided"}), 400
 
         # Extract base64 image data
-        image_data = data['image']
+        image_data = data["image"]
 
         # Remove data URL prefix if present
-        if ',' in image_data:
-            image_data = image_data.split(',')[1]
+        if "," in image_data:
+            image_data = image_data.split(",")[1]
 
         # Decode base64
         img_bytes = base64.b64decode(image_data)
         logger.info("Decoded %d bytes for rotation detection", len(img_bytes))
 
         # Save to temporary file for Tesseract
-        with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
             tmp.write(img_bytes)
             tmp_path = tmp.name
 
@@ -318,42 +325,50 @@ def detect_rotation():
             # Run Tesseract OSD (Orientation and Script Detection)
             logger.info("Running Tesseract OSD...")
             result = subprocess.run(
-                ['tesseract', tmp_path, 'stdout', '--psm', '0'],
+                ["tesseract", tmp_path, "stdout", "--psm", "0"],
                 capture_output=True,
                 text=True,
-                timeout=30
+                timeout=30,
             )
 
             osd_output = result.stdout
-            logger.info("Tesseract OSD output: %s", osd_output[:200] if osd_output else "empty")
+            logger.info(
+                "Tesseract OSD output: %s", osd_output[:200] if osd_output else "empty"
+            )
 
             # Parse orientation from OSD output
             orientation = 0
             rotate = 0
             confidence = 0.0
-            script = 'Unknown'
+            script = "Unknown"
 
-            for line in osd_output.split('\n'):
-                if 'Orientation in degrees:' in line:
-                    orientation = int(line.split(':')[1].strip())
-                elif 'Rotate:' in line:
-                    rotate = int(line.split(':')[1].strip())
-                elif 'Orientation confidence:' in line:
-                    confidence = float(line.split(':')[1].strip())
-                elif 'Script:' in line:
-                    script = line.split(':')[1].strip()
+            for line in osd_output.split("\n"):
+                if "Orientation in degrees:" in line:
+                    orientation = int(line.split(":")[1].strip())
+                elif "Rotate:" in line:
+                    rotate = int(line.split(":")[1].strip())
+                elif "Orientation confidence:" in line:
+                    confidence = float(line.split(":")[1].strip())
+                elif "Script:" in line:
+                    script = line.split(":")[1].strip()
 
-            logger.info("Detected: orientation=%d°, rotate=%d°, confidence=%.2f",
-                       orientation, rotate, confidence)
+            logger.info(
+                "Detected: orientation=%d°, rotate=%d°, confidence=%.2f",
+                orientation,
+                rotate,
+                confidence,
+            )
 
-            return jsonify({
-                'success': True,
-                'orientation': orientation,
-                'rotate': rotate,
-                'confidence': confidence,
-                'script': script,
-                'raw_output': osd_output
-            })
+            return jsonify(
+                {
+                    "success": True,
+                    "orientation": orientation,
+                    "rotate": rotate,
+                    "confidence": confidence,
+                    "script": script,
+                    "raw_output": osd_output,
+                }
+            )
 
         finally:
             # Clean up temp file
@@ -362,21 +377,23 @@ def detect_rotation():
 
     except subprocess.TimeoutExpired:
         logger.error("Tesseract OSD timed out")
-        return jsonify({'error': 'Tesseract OSD timed out'}), 500
+        return jsonify({"error": "Tesseract OSD timed out"}), 500
     except FileNotFoundError:
         logger.error("Tesseract not installed")
-        return jsonify({
-            'error': 'Tesseract not installed in container',
-            'success': False,
-            'orientation': 0,
-            'confidence': 0
-        }), 500
+        return jsonify(
+            {
+                "error": "Tesseract not installed in container",
+                "success": False,
+                "orientation": 0,
+                "confidence": 0,
+            }
+        ), 500
     except Exception as e:
         logger.exception("Rotation detection failed")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({"error": str(e)}), 500
 
 
-@app.route('/ocr', methods=['POST'])
+@app.route("/ocr", methods=["POST"])
 def process_ocr():
     """
     Process an uploaded image and extract text using OCR.
@@ -394,10 +411,10 @@ def process_ocr():
         return jsonify({"error": "PaddleOCR engine not initialized"}), 503
 
     # Validate file presence
-    if 'file' not in request.files:
+    if "file" not in request.files:
         return jsonify({"error": "No file uploaded. Use 'file' form field."}), 400
 
-    file = request.files['file']
+    file = request.files["file"]
 
     # Validate file
     is_valid, error_msg = validate_image_file(file)
@@ -413,7 +430,9 @@ def process_ocr():
         img_bytes = file.read()
         if len(img_bytes) == 0:
             return jsonify({"error": "Empty file uploaded"}), 400
-        emit_log(f"[STEP 1/6] Read {len(img_bytes)} bytes ({len(img_bytes)/1024/1024:.2f}MB) in {time.time() - step_start:.2f}s")
+        emit_log(
+            f"[STEP 1/6] Read {len(img_bytes)} bytes ({len(img_bytes)/1024/1024:.2f}MB) in {time.time() - step_start:.2f}s"
+        )
 
         # Step 2: Decode image
         step_start = time.time()
@@ -422,10 +441,14 @@ def process_ocr():
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
         if img is None:
-            return jsonify({"error": "Failed to decode image. File may be corrupted."}), 400
+            return jsonify(
+                {"error": "Failed to decode image. File may be corrupted."}
+            ), 400
 
         img_h, img_w = img.shape[:2]
-        emit_log(f"[STEP 2/6] Decoded image: {img_w}x{img_h} pixels in {time.time() - step_start:.2f}s")
+        emit_log(
+            f"[STEP 2/6] Decoded image: {img_w}x{img_h} pixels in {time.time() - step_start:.2f}s"
+        )
 
         # Step 3: Detect table structure using OpenCV
         step_start = time.time()
@@ -433,27 +456,34 @@ def process_ocr():
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
         # Detect horizontal and vertical lines for table structure
-        thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                        cv2.THRESH_BINARY_INV, 11, 2)
+        thresh = cv2.adaptiveThreshold(
+            gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, 2
+        )
 
         # Detect horizontal lines
         horizontal_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (40, 1))
-        horizontal_lines = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, horizontal_kernel, iterations=2)
+        horizontal_lines = cv2.morphologyEx(
+            thresh, cv2.MORPH_OPEN, horizontal_kernel, iterations=2
+        )
 
         # Detect vertical lines
         vertical_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 40))
-        vertical_lines = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, vertical_kernel, iterations=2)
+        vertical_lines = cv2.morphologyEx(
+            thresh, cv2.MORPH_OPEN, vertical_kernel, iterations=2
+        )
 
         # Combine lines to find table grid
         table_mask = cv2.add(horizontal_lines, vertical_lines)
 
         # Find contours for potential cells
-        contours, _ = cv2.findContours(table_mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        contours, _ = cv2.findContours(
+            table_mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE
+        )
 
         # Extract cell bounding boxes (filter by size)
         img_h, img_w = img.shape[:2]
         min_cell_area = (img_w * img_h) * 0.001  # At least 0.1% of image
-        max_cell_area = (img_w * img_h) * 0.5    # At most 50% of image
+        max_cell_area = (img_w * img_h) * 0.5  # At most 50% of image
 
         cells = []
         for cnt in contours:
@@ -462,13 +492,20 @@ def process_ocr():
             if min_cell_area < area < max_cell_area and w > 30 and h > 20:
                 cells.append((x, y, x + w, y + h))
 
-        emit_log(f"[STEP 3/6] Table detection complete: {len(cells)} cells, {len(contours)} contours in {time.time() - step_start:.2f}s")
+        emit_log(
+            f"[STEP 3/6] Table detection complete: {len(cells)} cells, {len(contours)} contours in {time.time() - step_start:.2f}s"
+        )
 
         # Step 4: Run PaddleOCR
         step_start = time.time()
-        emit_log("[STEP 4/6] Running PaddleOCR text recognition (this may take 10-30s)...")
+        emit_log(
+            "[STEP 4/6] Running PaddleOCR text recognition (this may take 10-30s)..."
+        )
         result = ocr.ocr(img, cls=True)
-        emit_log(f"[STEP 4/6] PaddleOCR complete in {time.time() - step_start:.2f}s", 'success')
+        emit_log(
+            f"[STEP 4/6] PaddleOCR complete in {time.time() - step_start:.2f}s",
+            "success",
+        )
 
         # Parse results
         raw_blocks = []
@@ -484,16 +521,17 @@ def process_ocr():
                 # Post-process text: add spaces between letters and numbers
                 # e.g., "Canadian Solar370-395wSolar" -> "Canadian Solar 370-395w Solar"
                 import re
+
                 # Add space between lowercase letter followed by digit
-                text = re.sub(r'([a-z])(\d)', r'\1 \2', text)
+                text = re.sub(r"([a-z])(\d)", r"\1 \2", text)
                 # Add space between digit followed by lowercase letter (not unit prefix like k, M, w)
-                text = re.sub(r'(\d)([a-zA-Z])(?![kKmMwWvVaA])', r'\1 \2', text)
+                text = re.sub(r"(\d)([a-zA-Z])(?![kKmMwWvVaA])", r"\1 \2", text)
                 # Add space between lowercase letter followed by uppercase
-                text = re.sub(r'([a-z])([A-Z])', r'\1 \2', text)
+                text = re.sub(r"([a-z])([A-Z])", r"\1 \2", text)
                 # Add space after closing parenthesis followed by letter
-                text = re.sub(r'\)([a-zA-Z])', r') \1', text)
+                text = re.sub(r"\)([a-zA-Z])", r") \1", text)
                 # Clean up multiple spaces
-                text = re.sub(r'\s+', ' ', text).strip()
+                text = re.sub(r"\s+", " ", text).strip()
 
                 # Calculate bounding box metrics
                 x_min = min(box[0][0], box[3][0])
@@ -503,19 +541,21 @@ def process_ocr():
                 y_center = (y_min + y_max) / 2
                 x_center = (x_min + x_max) / 2
 
-                raw_blocks.append({
-                    "text": text,
-                    "confidence": round(conf, 4),
-                    "bbox": box,
-                    "_y_min": y_min,
-                    "_y_max": y_max,
-                    "_y": y_center,
-                    "_x_min": x_min,
-                    "_x_max": x_max,
-                    "_x": x_center,
-                    "_width": x_max - x_min,
-                    "_height": y_max - y_min
-                })
+                raw_blocks.append(
+                    {
+                        "text": text,
+                        "confidence": round(conf, 4),
+                        "bbox": box,
+                        "_y_min": y_min,
+                        "_y_max": y_max,
+                        "_y": y_center,
+                        "_x_min": x_min,
+                        "_x_max": x_max,
+                        "_x": x_center,
+                        "_width": x_max - x_min,
+                        "_height": y_max - y_min,
+                    }
+                )
                 confidence_sum += conf
                 count += 1
 
@@ -534,13 +574,13 @@ def process_ocr():
 
             heights = [b["_height"] for b in raw_blocks]
             widths = [b["_width"] for b in raw_blocks]
-            median_height = sorted(heights)[len(heights)//2] if heights else 30
-            median_width = sorted(widths)[len(widths)//2] if widths else 100
+            median_height = sorted(heights)[len(heights) // 2] if heights else 30
+            median_width = sorted(widths)[len(widths) // 2] if widths else 100
 
             # Find gaps between X positions
             x_gaps = []
             for i in range(1, len(all_x_starts)):
-                gap = all_x_starts[i] - all_x_starts[i-1]
+                gap = all_x_starts[i] - all_x_starts[i - 1]
                 x_gaps.append((gap, all_x_starts[i]))
 
             if x_gaps:
@@ -549,7 +589,9 @@ def process_ocr():
                 # Use a threshold based on image width or large gap detection
                 gap_threshold = max(median_width * 1.5, 300)
 
-                emit_log(f"[DEBUG] X gaps (largest 5): {gap_values[:5]}, threshold: {gap_threshold:.0f}px")
+                emit_log(
+                    f"[DEBUG] X gaps (largest 5): {gap_values[:5]}, threshold: {gap_threshold:.0f}px"
+                )
 
                 col_boundaries = [all_x_starts[0]]
                 for gap_size, x_pos in x_gaps:
@@ -573,10 +615,14 @@ def process_ocr():
                         col_idx = i
                 columns[col_idx].append(block)
 
-            emit_log(f"[DEBUG] Blocks per column: {[len(columns[i]) for i in range(num_cols)]}")
+            emit_log(
+                f"[DEBUG] Blocks per column: {[len(columns[i]) for i in range(num_cols)]}"
+            )
 
             # STEP 5c: Within each column, cluster text blocks into cards based on Y gaps
-            def cluster_column_blocks(col_blocks, y_gap_threshold, col_idx, emit_debug=False):
+            def cluster_column_blocks(
+                col_blocks, y_gap_threshold, col_idx, emit_debug=False
+            ):
                 """Cluster text blocks within a column into separate cards."""
                 if not col_blocks:
                     return []
@@ -596,7 +642,9 @@ def process_ocr():
                         gaps.append(gap)
                         prev_y_max = max(prev_y_max, y_max)
                     gaps_sorted = sorted(gaps, reverse=True)
-                    emit_log(f"[DEBUG] Column {col_idx} Y gaps (largest 10): {gaps_sorted[:10]}")
+                    emit_log(
+                        f"[DEBUG] Column {col_idx} Y gaps (largest 10): {gaps_sorted[:10]}"
+                    )
 
                 cards = []
                 current_card = [y_positions[0][2]]
@@ -624,20 +672,28 @@ def process_ocr():
             # Lines within a card are close together (usually <80px)
             # Use 1.2x median height to capture more card breaks (lowered from 1.5)
             y_gap_threshold = median_height * 1.2
-            emit_log(f"[DEBUG] Y gap threshold for card separation: {y_gap_threshold:.0f}px (median_height={median_height:.0f})")
+            emit_log(
+                f"[DEBUG] Y gap threshold for card separation: {y_gap_threshold:.0f}px (median_height={median_height:.0f})"
+            )
 
             # Cluster blocks within each column
             column_cards = {}
             max_cards_per_col = 0
             for col_idx in range(num_cols):
-                cards = cluster_column_blocks(columns[col_idx], y_gap_threshold, col_idx, emit_debug=True)
+                cards = cluster_column_blocks(
+                    columns[col_idx], y_gap_threshold, col_idx, emit_debug=True
+                )
                 column_cards[col_idx] = cards
                 max_cards_per_col = max(max_cards_per_col, len(cards))
 
-            emit_log(f"[DEBUG] Cards per column: {[len(column_cards[i]) for i in range(num_cols)]}")
+            emit_log(
+                f"[DEBUG] Cards per column: {[len(column_cards[i]) for i in range(num_cols)]}"
+            )
 
             num_rows = max_cards_per_col
-            emit_log(f"[STEP 5/6] Detected {num_cols} columns x {num_rows} rows (max cards per column)")
+            emit_log(
+                f"[STEP 5/6] Detected {num_cols} columns x {num_rows} rows (max cards per column)"
+            )
 
             # STEP 5d: Build table - each row is the Nth card from each column
             for row_idx in range(num_rows):
@@ -649,31 +705,41 @@ def process_ocr():
                     if row_idx < len(cards):
                         card_blocks = cards[row_idx]
                         # Sort blocks within card by Y then X for reading order
-                        sorted_card = sorted(card_blocks, key=lambda b: (b["_y"], b["_x"]))
+                        sorted_card = sorted(
+                            card_blocks, key=lambda b: (b["_y"], b["_x"])
+                        )
                         raw_card_text = " ".join([b["text"] for b in sorted_card])
                         # Apply OCR text cleaning (spacing fixes, dictionary corrections)
                         card_text = clean_ocr_text(raw_card_text)
-                        card_conf = max([b["confidence"] for b in sorted_card]) if sorted_card else 0.0
+                        card_conf = (
+                            max([b["confidence"] for b in sorted_card])
+                            if sorted_card
+                            else 0.0
+                        )
                         row_data[col_idx] = card_text
                         row_confidences[col_idx] = card_conf
 
-                table_rows.append({
-                    "row": row_idx,
-                    "cells": row_data,
-                    "confidences": row_confidences
-                })
+                table_rows.append(
+                    {"row": row_idx, "cells": row_data, "confidences": row_confidences}
+                )
 
                 for col_idx, cell_text in enumerate(row_data):
                     if cell_text:
-                        blocks.append({
-                            "text": cell_text,
-                            "confidence": row_confidences[col_idx],
-                            "row": row_idx,
-                            "col": col_idx
-                        })
+                        blocks.append(
+                            {
+                                "text": cell_text,
+                                "confidence": row_confidences[col_idx],
+                                "row": row_idx,
+                                "col": col_idx,
+                            }
+                        )
 
-            emit_log(f"[STEP 5/6] Grid assignment complete: {num_rows} rows x {num_cols} columns")
-            emit_log("[STEP 5/6] Applied OCR text cleaning (spacing fixes, dictionary corrections)")
+            emit_log(
+                f"[STEP 5/6] Grid assignment complete: {num_rows} rows x {num_cols} columns"
+            )
+            emit_log(
+                "[STEP 5/6] Applied OCR text cleaning (spacing fixes, dictionary corrections)"
+            )
 
             # Step 6: Format output
             step_start = time.time()
@@ -688,47 +754,52 @@ def process_ocr():
 
         emit_log(f"[STEP 6/6] Output formatted in {time.time() - step_start:.2f}s")
         total_time = time.time() - total_start
-        emit_log(f"[COMPLETE] OCR finished: {count} text blocks, {len(table_rows)} rows, avg confidence: {avg_conf * 100:.2f}% (total: {total_time:.2f}s)", 'success')
+        emit_log(
+            f"[COMPLETE] OCR finished: {count} text blocks, {len(table_rows)} rows, avg confidence: {avg_conf * 100:.2f}% (total: {total_time:.2f}s)",
+            "success",
+        )
 
         # Get collected logs for response
-        collected_logs = getattr(request_logs, 'logs', [])
+        collected_logs = getattr(request_logs, "logs", [])
 
-        return jsonify({
-            "success": True,
-            "text": "\n".join(extracted_text),
-            "confidence": avg_conf,
-            "block_count": count,
-            "blocks": blocks,
-            "table": table_rows,
-            "columns": len(col_boundaries) if 'col_boundaries' in dir() else 0,
-            "logs": collected_logs
-        })
+        return jsonify(
+            {
+                "success": True,
+                "text": "\n".join(extracted_text),
+                "confidence": avg_conf,
+                "block_count": count,
+                "blocks": blocks,
+                "table": table_rows,
+                "columns": len(col_boundaries) if "col_boundaries" in dir() else 0,
+                "logs": collected_logs,
+            }
+        )
 
     except Exception as e:
-        emit_log(f"[ERROR] OCR failed: {str(e)}", 'error')
+        emit_log(f"[ERROR] OCR failed: {str(e)}", "error")
         logger.exception("Error processing OCR request")
         # Get collected logs for error response
-        collected_logs = getattr(request_logs, 'logs', [])
-        return jsonify({
-            "error": "Internal server error during OCR processing",
-            "details": str(e) if app.debug else None,
-            "logs": collected_logs
-        }), 500
+        collected_logs = getattr(request_logs, "logs", [])
+        return jsonify(
+            {
+                "error": "Internal server error during OCR processing",
+                "details": str(e) if app.debug else None,
+                "logs": collected_logs,
+            }
+        ), 500
 
 
 @app.errorhandler(413)
 def request_entity_too_large(_error):
     """Handle file too large error."""
     max_mb = MAX_CONTENT_LENGTH // (1024 * 1024)
-    return jsonify({
-        "error": f"File too large. Maximum size is {max_mb} MB"
-    }), 413
+    return jsonify({"error": f"File too large. Maximum size is {max_mb} MB"}), 413
 
 
 # -----------------------------------------------------------------------------
 # Application Entry Point
 # -----------------------------------------------------------------------------
-if __name__ == '__main__':
+if __name__ == "__main__":
     # Development server only - use gunicorn in production
     logger.warning("Running with Flask dev server. Use gunicorn for production!")
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    app.run(host="0.0.0.0", port=5000, debug=False)

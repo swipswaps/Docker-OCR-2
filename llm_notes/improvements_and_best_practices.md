@@ -22,19 +22,19 @@ test.describe('OCR Processing', () => {
   test('should process JPEG files correctly', async ({ page }) => {
     // Test JPEG without HEIC conversion
   });
-  
+
   test('should process HEIC files without double rotation', async ({ page }) => {
     // Verify HEIC → JPEG conversion doesn't over-rotate
   });
-  
+
   test('should detect correct number of rows', async ({ page }) => {
     // Verify row separation algorithm
   });
-  
+
   test('should handle multi-column documents', async ({ page }) => {
     // Test column-first layout detection
   });
-  
+
   test('should fallback to Tesseract when Docker unavailable', async ({ page }) => {
     // Stop Docker, verify graceful fallback
   });
@@ -100,7 +100,7 @@ async function isHeicFile(file: File): Promise<boolean> {
 async function getOptimalMaxDimension(file: File): Promise<number> {
   const dims = await getImageDimensions(file);
   const megapixels = (dims.width * dims.height) / 1_000_000;
-  
+
   // Scale based on image complexity
   if (megapixels > 20) return 3000;  // Very large images
   if (megapixels > 10) return 4000;  // Large images
@@ -113,8 +113,8 @@ Currently all EXIF is lost during canvas rotation. Preserve important metadata:
 
 ```typescript
 async function rotateWithExifPreservation(file: File, angle: number): Promise<File> {
-  const exifData = await exifr.parse(file, { 
-    pick: ['DateTimeOriginal', 'Make', 'Model', 'GPSLatitude', 'GPSLongitude'] 
+  const exifData = await exifr.parse(file, {
+    pick: ['DateTimeOriginal', 'Make', 'Model', 'GPSLatitude', 'GPSLongitude']
   });
   const rotatedFile = await rotateImageCanvas(file, angle);
   // Re-embed EXIF into rotated image (requires piexifjs or similar)
@@ -145,9 +145,9 @@ def calculate_adaptive_threshold(gaps: list[float]) -> float:
     """Find natural break in gap distribution using Jenks natural breaks."""
     if len(gaps) < 3:
         return median(gaps) * 1.2
-    
+
     sorted_gaps = sorted(gaps, reverse=True)
-    
+
     # Find largest drop between consecutive gaps
     max_drop = 0
     threshold_idx = 0
@@ -156,7 +156,7 @@ def calculate_adaptive_threshold(gaps: list[float]) -> float:
         if drop > max_drop:
             max_drop = drop
             threshold_idx = i
-    
+
     # Threshold between the groups
     return (sorted_gaps[threshold_idx] + sorted_gaps[threshold_idx + 1]) / 2
 ```
@@ -473,8 +473,8 @@ class OcrTimeoutError extends Error {
 #### 6.2 Retry Logic with Exponential Backoff
 ```typescript
 async function fetchWithRetry(
-  url: string, 
-  options: RequestInit, 
+  url: string,
+  options: RequestInit,
   maxRetries = 3
 ): Promise<Response> {
   for (let attempt = 0; attempt < maxRetries; attempt++) {
@@ -515,7 +515,7 @@ async function processWithPreview(file: File, onPreview: (url: string) => void) 
   // Immediate: create tiny preview
   const preview = await resizeImage(file, 400);
   onPreview(URL.createObjectURL(preview));
-  
+
   // Background: process full image
   const processed = await preprocessImage(file);
   return processed;
@@ -531,7 +531,7 @@ const ocrCache = new Map<string, OcrResult>();
 async function cachedOcr(file: File): Promise<OcrResult> {
   const hash = await hashFile(file);
   if (ocrCache.has(hash)) return ocrCache.get(hash)!;
-  
+
   const result = await processOcr(file);
   ocrCache.set(hash, result);
   return result;
@@ -569,7 +569,7 @@ frontend/
 // hooks/useDockerHealth.ts
 function useDockerHealth(pollInterval = 15000) {
   const [health, setHealth] = useState<DockerHealth>({ status: 'checking' });
-  
+
   useEffect(() => {
     const check = async () => {
       const isHealthy = await checkDockerHealth();
@@ -579,7 +579,7 @@ function useDockerHealth(pollInterval = 15000) {
     const interval = setInterval(check, pollInterval);
     return () => clearInterval(interval);
   }, [pollInterval]);
-  
+
   return health;
 }
 ```
@@ -604,4 +604,3 @@ function useDockerHealth(pollInterval = 15000) {
 | GPU support | Low | High | **P3** |
 | Visual regression tests | Low | Medium | **P3** |
 | Request queuing (Redis) | Low | High | **P3** |
-

@@ -1,0 +1,122 @@
+name: Quality Gates
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  # ===========================================================================
+  # Frontend Quality Checks
+  # ===========================================================================
+  frontend:
+    name: Frontend (TypeScript/React)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: ESLint
+        run: npm run lint
+
+      - name: TypeScript
+        run: npx tsc --noEmit
+
+      - name: Build
+        run: npm run build
+
+      - name: Check Bundle Size
+        run: |
+          TOTAL=$(du -sb dist/assets/*.js 2>/dev/null | awk '{sum += $1} END {print sum}')
+          MAX=524288  # 512 KB
+          echo "Bundle size: ${TOTAL} bytes (max: ${MAX})"
+          if [ "${TOTAL:-0}" -gt "$MAX" ]; then
+            echo "::error::Bundle size ${TOTAL} exceeds ${MAX} bytes"
+            echo "Consider using dynamic import() for heavy dependencies"
+            exit 1
+          fi
+
+      - name: Unit Tests
+        run: npm test -- --coverage --coverageThreshold='{"global":{"lines":80}}'
+        continue-on-error: true  # Remove this once tests exist
+
+      - name: E2E Tests
+        run: npx playwright test
+        continue-on-error: true  # Remove this once tests exist
+
+  # ===========================================================================
+  # Backend Quality Checks
+  # ===========================================================================
+  backend:
+    name: Backend (Python)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install ruff mypy pytest pytest-cov
+          pip install -r requirements.txt || true
+
+      - name: Ruff Lint
+        run: ruff check . --config ../configs/pyproject.toml
+
+      - name: Ruff Format Check
+        run: ruff format --check . --config ../configs/pyproject.toml
+
+      - name: Mypy Type Check
+        run: mypy . --config-file ../configs/pyproject.toml
+        continue-on-error: true  # Set to false once types are added
+
+      - name: Unit Tests with Coverage
+        run: pytest --cov=. --cov-fail-under=80 -v
+        continue-on-error: true  # Remove this once tests exist
+
+  # ===========================================================================
+  # Danger.js PR Review
+  # ===========================================================================
+  danger:
+    name: PR Review (Danger.js)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Danger
+        run: npm install -g danger
+
+      - name: Run Danger
+        run: danger ci
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true  # Remove once dangerfile.ts is configured

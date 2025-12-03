@@ -51,13 +51,13 @@ export const checkDockerHealth = async (): Promise<boolean> => {
  */
 export const runDiagnostics = async (onLog: (msg: string, level: any) => void) => {
     onLog('Running System Diagnostics...', 'info');
-    
+
     // 1. Check Fetch
     try {
         onLog(`[Step 1/4] Connecting to Backend (${API_BASE}/health)...`, 'info');
         const res = await fetch(`${API_BASE}/health`);
         onLog(`[Result] HTTP Status: ${res.status} ${res.statusText}`, res.ok ? 'success' : 'error');
-        
+
         if (res.ok) {
             const text = await res.text();
             onLog(`[Result] Body: ${text}`, 'info');
@@ -101,7 +101,7 @@ export const runDiagnostics = async (onLog: (msg: string, level: any) => void) =
     } else {
          onLog('[Result] HTML5 Canvas: Unsupported (Image processing will fail)', 'error');
     }
-    
+
     onLog('Diagnostics Complete.', 'info');
 };
 
@@ -146,7 +146,7 @@ const rotateImageCanvas = (file: File, angleDegrees: number): Promise<File> => {
         ctx.rotate(angle);
         ctx.drawImage(img, -img.width / 2, -img.height / 2);
         ctx.restore();
-        
+
         canvas.toBlob((blob) => {
           if (blob) resolve(new File([blob], file.name, { type: 'image/jpeg' }));
           else reject(new Error('Canvas to Blob failed'));
@@ -172,9 +172,9 @@ const detectOrientationOSD = async (
     onLog?.('Initializing OSD Worker (eng + osd)...', 'info');
     worker = await createWorker('eng', 3, { logger: () => {} });
     await worker.loadLanguage('osd');
-    await worker.initialize('osd'); 
+    await worker.initialize('osd');
     await worker.setParameters({ tessedit_pageseg_mode: '0' });
-    
+
     const result = await worker.recognize(file);
     if (result && result.data) {
         onLog?.(`[Verbatim] OSD Output: Orientation ${result.data.orientation_degrees}°`, 'info');
@@ -186,9 +186,9 @@ const detectOrientationOSD = async (
     const msg = sanitizeLog(e.message || e.toString());
     if (msg.includes('Aborted') || msg.includes('RuntimeError')) {
         onLog?.('OSD Detection skipped (Wasm Runtime compatibility). Continuing.', 'warn');
-        return 0; 
+        return 0;
     }
-    onLog?.(`OSD Detection failed: ${msg}`, 'warn'); 
+    onLog?.(`OSD Detection failed: ${msg}`, 'warn');
     return 0;
   } finally {
     if (worker) await worker.terminate();
@@ -376,7 +376,7 @@ const enhanceAndPadImage = (file: File, resizeToWidth: number = 2500, applyDilat
 
         let width = img.width;
         let height = img.height;
-        
+
         // Resize
         if (resizeToWidth && width > resizeToWidth) {
             const scale = resizeToWidth / width;
@@ -385,7 +385,7 @@ const enhanceAndPadImage = (file: File, resizeToWidth: number = 2500, applyDilat
             onLog?.(`[Ported Logic] Resizing to 300DPI equivalent (${width}x${height})...`, 'info');
         }
 
-        const padding = Math.floor(Math.max(width, height) * 0.1); 
+        const padding = Math.floor(Math.max(width, height) * 0.1);
         canvas.width = width + (padding * 2);
         canvas.height = height + (padding * 2);
 
@@ -411,7 +411,7 @@ const enhanceAndPadImage = (file: File, resizeToWidth: number = 2500, applyDilat
             ctx.drawImage(ctx.canvas, 0, 1);
             ctx.globalCompositeOperation = 'source-over';
         }
-        
+
         canvas.toBlob((blob) => {
           if (blob) resolve(new File([blob], file.name, { type: 'image/jpeg' }));
           else reject(new Error('Canvas to Blob failed'));
@@ -515,7 +515,7 @@ export const preprocessImage = async (
   } catch (e: any) {
       console.warn("Padding failed", e);
   }
-  
+
   return processedFile;
 };
 

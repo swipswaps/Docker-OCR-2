@@ -39,14 +39,14 @@ export const ExtractionResult: React.FC<ExtractionResultProps> = ({ text, onChan
             </span>
         </div>
         <div className="flex space-x-1">
-          <button 
+          <button
             onClick={handleCopy}
             className="flex items-center space-x-1 px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-md text-xs font-medium transition-colors"
           >
             {copied ? <Check size={14} className="text-green-400" /> : <Copy size={14} />}
             <span>{copied ? 'Copied' : 'Copy'}</span>
           </button>
-          <button 
+          <button
             onClick={handleDownload}
             className="p-1.5 hover:bg-slate-700 text-slate-400 hover:text-blue-400 rounded-md transition-colors"
             title={`Download as ${mode.toUpperCase()}`}

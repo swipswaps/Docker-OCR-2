@@ -8,9 +8,9 @@ interface DocumentViewerProps {
   isProcessing?: boolean;
 }
 
-export const DocumentViewer: React.FC<DocumentViewerProps> = ({ 
-    imageSrc, 
-    onClear, 
+export const DocumentViewer: React.FC<DocumentViewerProps> = ({
+    imageSrc,
+    onClear,
     onRotate,
     isProcessing = false
 }) => {
@@ -25,11 +25,11 @@ export const DocumentViewer: React.FC<DocumentViewerProps> = ({
 
       <div className="flex items-center justify-between p-3 border-b border-slate-700 bg-slate-900/50 z-10">
         <span className="text-xs font-medium text-slate-400 uppercase tracking-wider">Original Document</span>
-        
+
         <div className="flex items-center space-x-1">
              {onRotate && (
                 <>
-                    <button 
+                    <button
                         onClick={() => !isProcessing && onRotate('left')}
                         disabled={isProcessing}
                         className="p-1.5 hover:bg-slate-700 text-slate-400 hover:text-blue-400 rounded-lg transition-colors disabled:opacity-50"
@@ -37,7 +37,7 @@ export const DocumentViewer: React.FC<DocumentViewerProps> = ({
                     >
                         <RotateCcw size={16} />
                     </button>
-                    <button 
+                    <button
                         onClick={() => !isProcessing && onRotate('right')}
                         disabled={isProcessing}
                         className="p-1.5 hover:bg-slate-700 text-slate-400 hover:text-blue-400 rounded-lg transition-colors disabled:opacity-50"
@@ -48,7 +48,7 @@ export const DocumentViewer: React.FC<DocumentViewerProps> = ({
                     <div className="w-px h-4 bg-slate-700 mx-1"></div>
                 </>
              )}
-            <button 
+            <button
                 onClick={onClear}
                 disabled={isProcessing}
                 className="p-1.5 hover:bg-red-500/20 hover:text-red-400 text-slate-500 rounded-lg transition-colors"
@@ -59,9 +59,9 @@ export const DocumentViewer: React.FC<DocumentViewerProps> = ({
         </div>
       </div>
       <div className="flex-1 overflow-auto p-4 flex items-center justify-center bg-slate-900/30">
-        <img 
-          src={imageSrc} 
-          alt="Uploaded document" 
+        <img
+          src={imageSrc}
+          alt="Uploaded document"
           className="max-w-full max-h-full object-contain shadow-lg rounded-md transition-transform duration-300"
         />
       </div>

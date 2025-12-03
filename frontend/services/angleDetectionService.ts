@@ -21,7 +21,7 @@ export async function detectRotationAngle(
 ): Promise<AngleDetectionResult> {
   try {
     onProgress?.(10, 'Sending image for rotation detection...');
-    
+
     const response = await fetch(`${API_BASE}/detect-rotation`, {
       method: 'POST',
       headers: {
@@ -56,8 +56,8 @@ export async function detectRotationAngle(
         correctionAngle = 90;   // Rotate 90° CW to correct
       }
 
-      onProgress?.(100, correctionAngle !== 0 
-        ? `Correction needed: rotate ${correctionAngle}°` 
+      onProgress?.(100, correctionAngle !== 0
+        ? `Correction needed: rotate ${correctionAngle}°`
         : 'No rotation correction needed');
 
       return {
@@ -79,7 +79,7 @@ export async function detectRotationAngle(
     console.error('Angle detection failed:', error);
     const errorMsg = error instanceof Error ? error.message : String(error);
     onProgress?.(100, `Detection failed: ${errorMsg}`);
-    
+
     return {
       angle: 0,
       confidence: 0,
@@ -132,4 +132,3 @@ export async function rotateImage(imageData: string, angle: number): Promise<str
     img.src = imageData;
   });
 }
-

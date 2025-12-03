@@ -136,4 +136,3 @@ echo -e "${BLUE}═════════════════════�
 echo ""
 echo -e "Container logs (last 10 lines):"
 docker logs --tail 10 "$CONTAINER_NAME" 2>&1 | sed 's/^/  /'
-

@@ -22,7 +22,7 @@ test('Debug IMG_0371 rotation', async ({ page }) => {
   page.on('console', (msg) => {
     const text = msg.text();
     logs.push(text);
-    if (text.includes('[') || text.includes('HEIC') || text.includes('EXIF') || 
+    if (text.includes('[') || text.includes('HEIC') || text.includes('EXIF') ||
         text.includes('rotation') || text.includes('Rotation') || text.includes('orientation')) {
       console.log(`  [APP] ${text}`);
     }
@@ -80,7 +80,7 @@ test('Debug IMG_0371 rotation', async ({ page }) => {
   // Analyze logs
   console.log('\n📋 Key Processing Steps:');
   console.log('─────────────────────────────────────────────────');
-  
+
   const heicLog = logs.find(l => l.includes('HEIC converted'));
   const exifLog = logs.find(l => l.includes('EXIF Orientation'));
   const exifApplied = logs.find(l => l.includes('EXIF rotation applied'));
@@ -118,4 +118,3 @@ test('Debug IMG_0371 rotation', async ({ page }) => {
   console.log(`\n📁 Screenshots saved to: ${screenshotDir}`);
   console.log('   View with: eog /tmp/rotation-debug/*.png\n');
 });
-

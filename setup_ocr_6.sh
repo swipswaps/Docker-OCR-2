@@ -68,34 +68,34 @@ def process_ocr():
     try:
         if 'file' not in request.files:
             return jsonify({"error": "No file uploaded"}), 400
-        
+
         file = request.files['file']
         mode = request.form.get('mode', 'layout')
-        
+
         # Read image
         img_bytes = file.read()
         nparr = np.frombuffer(img_bytes, np.uint8)
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        
+
         if img is None:
             return jsonify({"error": "Failed to decode image"}), 400
-        
+
         # Run OCR
         result = ocr.ocr(img, cls=True)
-        
+
         # Parse results
         extracted_text = []
         blocks = []
         confidence_sum = 0
         count = 0
-        
+
         if result and result[0]:
             for line in result[0]:
                 # line structure: [[box], [text, confidence]]
                 text = line[1][0]
                 conf = line[1][1]
                 box = line[0]
-                
+
                 extracted_text.append(text)
                 blocks.append({
                     "text": text,
@@ -104,9 +104,9 @@ def process_ocr():
                 })
                 confidence_sum += conf
                 count += 1
-                
+
         avg_conf = confidence_sum / count if count > 0 else 0
-        
+
         return jsonify({
             "text": "\n".join(extracted_text),
             "confidence": avg_conf,

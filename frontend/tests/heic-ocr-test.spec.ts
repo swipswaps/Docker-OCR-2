@@ -75,7 +75,7 @@ test('HEIC upload and OCR extraction with rotation', async ({ page }) => {
   const exifDetected = logs.some(log => log.includes('EXIF'));
   const rotationDetected = logs.some(log => log.includes('OSD result') || log.includes('orientation'));
   const correctionApplied = logs.some(log => log.includes('Correction needed') || log.includes('rotation correction'));
-  
+
   console.log('📋 Processing Status:');
   console.log(`  HEIC Conversion: ${heicConverted ? '✅' : '❌'}`);
   console.log(`  EXIF Detection: ${exifDetected ? '✅' : '❌'}`);
@@ -89,7 +89,7 @@ test('HEIC upload and OCR extraction with rotation', async ({ page }) => {
   // Check for OCR completion
   const ocrComplete = logs.some(log => log.includes('Processing complete'));
   const confidenceLog = logs.find(log => log.includes('Average Confidence'));
-  
+
   console.log(`📋 OCR Status: ${ocrComplete ? '✅ Complete' : '❌ Not complete'}`);
   if (confidenceLog) {
     console.log(`  ${confidenceLog}`);
@@ -155,4 +155,3 @@ test('HEIC upload and OCR extraction with rotation', async ({ page }) => {
 
   console.log('✅ TEST COMPLETE\n');
 });
-

@@ -495,4 +495,3 @@ sleep 30 && curl http://localhost:5000/health
 # Run Playwright test
 cd frontend && npx playwright test debug-rotation.spec.ts --headed
 ```
-

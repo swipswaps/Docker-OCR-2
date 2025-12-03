@@ -1,0 +1,97 @@
+# Python project configuration
+# Copy to your project root
+
+[project]
+name = "your-project"
+version = "0.1.0"
+requires-python = ">=3.12"
+
+# =============================================================================
+# Ruff - Fast Python Linter (replaces flake8, isort, pyupgrade, black)
+# =============================================================================
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+fix = true
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # pyflakes
+    "I",      # isort (import sorting)
+    "UP",     # pyupgrade (modernize Python syntax)
+    "ANN",    # flake8-annotations (require type hints)
+    "B",      # flake8-bugbear (common bugs)
+    "C4",     # flake8-comprehensions
+    "SIM",    # flake8-simplify
+    "RUF",    # Ruff-specific rules
+]
+
+ignore = [
+    "ANN401",  # Dynamically typed expressions (Any) - let mypy handle this
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["ANN"]  # Don't require type hints in tests
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+# =============================================================================
+# Mypy - Static Type Checker
+# =============================================================================
+[tool.mypy]
+python_version = "3.12"
+strict = true
+
+# Strict mode enables all of these:
+warn_return_any = true
+warn_unused_ignores = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+disallow_any_generics = true
+no_implicit_optional = true
+check_untyped_defs = true
+
+# Additional strictness
+warn_redundant_casts = true
+warn_unused_configs = true
+show_error_codes = true
+show_column_numbers = true
+
+# Per-module overrides
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+
+[[tool.mypy.overrides]]
+module = [
+    "paddleocr.*",
+    "cv2.*",
+    "psycopg2.*",
+]
+ignore_missing_imports = true
+
+# =============================================================================
+# Pytest - Testing
+# =============================================================================
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+
+# Coverage settings
+[tool.coverage.run]
+source = ["."]
+omit = ["tests/*", "venv/*", ".venv/*"]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]

@@ -322,8 +322,8 @@ const App: React.FC = () => {
       <main className="flex-1 flex overflow-hidden">
         <div className="w-1/2 flex flex-col border-r border-slate-800 bg-slate-900/50 p-4 relative">
           {file && imagePreview ? (
-            <DocumentViewer 
-                imageSrc={imagePreview} 
+            <DocumentViewer
+                imageSrc={imagePreview}
                 onClear={() => { setFile(null); setImagePreview(null); setExtractedText(''); }}
                 onRotate={handleRotate}
                 isProcessing={status.isProcessing}
@@ -333,7 +333,7 @@ const App: React.FC = () => {
                 <FileUpload onFileSelect={handleFileSelect} isProcessing={status.isProcessing} />
             </div>
           )}
-          
+
           {status.isProcessing && (
             <div className="absolute bottom-8 left-1/2 -translate-x-1/2 bg-slate-800/90 backdrop-blur border border-slate-700 px-6 py-3 rounded-full shadow-2xl flex items-center space-x-3 z-30">
               <RefreshCw size={18} className="animate-spin text-blue-400" />
@@ -512,12 +512,12 @@ const App: React.FC = () => {
                 <X size={24} />
               </button>
             </div>
-            
+
             <div className="p-6 space-y-6 overflow-y-auto">
               <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl p-4">
                 <h3 className="text-blue-400 font-semibold mb-2 text-sm uppercase tracking-wider">Why Upgrade?</h3>
                 <p className="text-slate-300 text-sm leading-relaxed">
-                  The offline browser engine struggles with complex tables, faint headers, and dense layouts. 
+                  The offline browser engine struggles with complex tables, faint headers, and dense layouts.
                   PaddleOCR runs locally in Docker and provides backend-grade accuracy for free.
                 </p>
               </div>
@@ -528,7 +528,7 @@ const App: React.FC = () => {
                     <div className="flex-1">
                         <h4 className="text-white font-medium mb-1">Download Installer</h4>
                         <p className="text-slate-400 text-sm mb-3">Get the self-contained setup script (creates Dockerfile, app.py, etc).</p>
-                        <button 
+                        <button
                             onClick={handleDownloadInstaller}
                             className="flex items-center space-x-2 bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg font-medium transition-all shadow-lg hover:shadow-blue-500/25"
                         >
@@ -545,7 +545,7 @@ const App: React.FC = () => {
                         <p className="text-slate-400 text-sm mb-2">Open your terminal in the project folder and run:</p>
                         <div className="bg-slate-950 rounded-lg p-3 font-mono text-sm text-green-400 border border-slate-800 flex justify-between items-center group">
                             <code>sh setup_ocr.sh</code>
-                            <button 
+                            <button
                                 onClick={() => navigator.clipboard.writeText('sh setup_ocr.sh')}
                                 className="opacity-0 group-hover:opacity-100 p-1.5 hover:bg-slate-800 rounded text-slate-400 hover:text-white transition-all"
                                 title="Copy"
@@ -557,7 +557,7 @@ const App: React.FC = () => {
                 </div>
               </div>
             </div>
-            
+
             <div className="p-4 bg-slate-950 border-t border-slate-800 text-center">
                 <p className="text-xs text-slate-500">
                     Once the script finishes, the status indicator will turn <span className="text-green-400 font-bold">GREEN</span> automatically.

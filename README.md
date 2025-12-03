@@ -487,4 +487,3 @@ MIT License - See [LICENSE](LICENSE) for details.
 2. Create a feature branch
 3. Run tests: `cd frontend && npx playwright test`
 4. Submit a pull request
-

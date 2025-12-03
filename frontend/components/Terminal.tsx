@@ -39,7 +39,7 @@ export const Terminal: React.FC<TerminalProps> = ({ logs, health, onDiagnostics 
           <TerminalIcon size={14} className="text-slate-400" />
           <span className="font-semibold text-slate-300">SYSTEM LOGS</span>
         </div>
-        
+
         <div className="flex items-center space-x-4">
             <div className="flex items-center space-x-2 bg-slate-800 px-2 py-1 rounded border border-slate-700">
             <Activity size={12} className={getStatusColor(health.status)} />
@@ -49,7 +49,7 @@ export const Terminal: React.FC<TerminalProps> = ({ logs, health, onDiagnostics 
             </div>
 
             {onDiagnostics && (
-                <button 
+                <button
                     onClick={onDiagnostics}
                     className="flex items-center space-x-1.5 px-2 py-1 hover:bg-slate-800 text-blue-400 hover:text-white rounded transition-colors"
                     title="Run Connectivity Tests"
@@ -59,7 +59,7 @@ export const Terminal: React.FC<TerminalProps> = ({ logs, health, onDiagnostics 
                 </button>
             )}
 
-            <button 
+            <button
                 onClick={handleCopyLogs}
                 className="flex items-center space-x-1.5 px-2 py-1 hover:bg-slate-800 text-slate-400 hover:text-white rounded transition-colors"
                 title="Copy all logs to clipboard"
@@ -74,7 +74,7 @@ export const Terminal: React.FC<TerminalProps> = ({ logs, health, onDiagnostics 
         {logs.length === 0 && (
           <div className="text-slate-600 italic">Waiting for system events...</div>
         )}
-        
+
         {logs.map((log, idx) => (
           <div key={idx} className="flex space-x-3 hover:bg-slate-900/50 p-0.5 rounded group">
             <span className="text-slate-500 min-w-[70px] select-none">{log.timestamp}</span>
